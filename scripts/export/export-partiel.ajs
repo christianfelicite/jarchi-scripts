@@ -1,0 +1,80 @@
+/*
+ * Objectif   : extraire une partie d'un modèle dans un fichier .archimate
+ *              autonome, à importer ensuite dans un autre modèle par l'import
+ *              natif d'Archi (Fichier › Importer › Modèle dans le modèle
+ *              sélectionné). Les identifiants sont conservés : un nouvel
+ *              import met à jour les objets au lieu de les dupliquer.
+ * Prérequis  : vues à exporter préfixées par PREFIX. Modèle source enregistré :
+ *              le script lit le fichier sur disque, pas le modèle en mémoire.
+ * Effets     : aucun sur le modèle source. Crée une copie du fichier source,
+ *              puis élague cette copie : ne restent que les vues préfixées et
+ *              les concepts qu'elles affichent. Option demandée au lancement :
+ *              garder aussi les relations non dessinées entre concepts
+ *              conservés. Aucun élément supplémentaire n'est tiré.
+ * Limite     : si Archi refuse d'ouvrir la copie, fermer le modèle source.
+ *              Les deux partagent le même identifiant de modèle.
+ */
+const PREFIX = "[Export]";
+
+const Files   = Java.type("java.nio.file.Files");
+const Paths   = Java.type("java.nio.file.Paths");
+const REPLACE = Java.type("java.nio.file.StandardCopyOption").REPLACE_EXISTING;
+
+// 1. Choix des fichiers et de l'option
+const srcPath = window.promptOpenFile({ title: "Modèle source", filterExtensions: ["*.archimate"] });
+if (!srcPath) exit();
+const dstPath = window.promptSaveFile({ title: "Copie à créer", filterExtensions: ["*.archimate"], fileName: "export.archimate" });
+if (!dstPath) exit();
+const KEEP_HIDDEN_RELATIONS = window.confirm(
+  "Garder aussi les relations non dessinées entre éléments exportés ?\n\n" +
+  "OK : oui, toutes les relations entre éléments conservés.\n" +
+  "Annuler : non, uniquement les relations visibles dans les vues."
+);
+
+const src = Paths.get(srcPath).toAbsolutePath();
+const dst = Paths.get(dstPath).toAbsolutePath();
+if (src.equals(dst)) { window.alert("La copie doit être un fichier différent du source."); exit(); }
+
+// 2. Copie complète du fichier
+Files.copy(src, dst, REPLACE);
+const m = $.model.load(dst.toString());
+
+// 3. Périmètre : vues marquées + concepts qu'elles affichent
+const views = $(m).find("view").filter(v => v.name.startsWith(PREFIX));
+if (views.size() === 0) {
+  window.alert("Aucune vue ne commence par " + PREFIX + ". Rien n'a été exporté.");
+  Files.deleteIfExists(dst);
+  exit();
+}
+const keepViews = new Set(), keep = new Set();
+views.each(v => {
+  keepViews.add(v.id);
+  $(v).find().each(o => { if (o.concept) keep.add(o.concept.id); });
+});
+
+// 3 bis. Option : relations non dessinées entre concepts conservés.
+// Boucle jusqu'à stabilité, car une relation peut relier une autre relation.
+let hidden = 0;
+if (KEEP_HIDDEN_RELATIONS) {
+  let added;
+  do {
+    added = 0;
+    $(m).find("relationship").each(r => {
+      if (!keep.has(r.id) && keep.has(r.source.id) && keep.has(r.target.id)) {
+        keep.add(r.id);
+        added++;
+      }
+    });
+    hidden += added;
+  } while (added > 0);
+}
+
+// 4. Élagage de la copie
+$(m).find("view").filter(v => !keepViews.has(v.id)).delete();
+$(m).find("relationship").filter(r => !keep.has(r.id)).delete();
+$(m).find("element").filter(e => !keep.has(e.id)).delete();
+
+// 5. Enregistrement de la copie
+m.save();
+console.log("Export prêt : " + dst + " (" + keepViews.size + " vues, " + keep.size +
+            " concepts dont " + hidden + " relations non dessinées)");

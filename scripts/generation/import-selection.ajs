@@ -1,0 +1,100 @@
+/*
+ * Objectif   : copier une sélection du modèle courant dans un autre modèle
+ *              ouvert, en recréant chaque objet.
+ * Prérequis  : modèles source et cible ouverts. Sélection dans le source :
+ *              vues, éléments, relations, dossiers ou objets d'une vue.
+ * Effets     : MODIFIE LE MODÈLE CIBLE. Crée les concepts et les vues avec de
+ *              nouveaux identifiants. L'identifiant source est tracé dans la
+ *              propriété SRC_PROP : un concept déjà importé est retrouvé et mis
+ *              à jour, sans doublon. Les vues sont recréées à chaque exécution.
+ * Limite     : non couverts : connexions vers une connexion, vues canvas et
+ *              sketch, images, style complet. Pour un import fidèle qui
+ *              conserve les identifiants, utiliser export/export-partiel.ajs.
+ */
+load(__DIR__ + "../lib/commun.js");
+
+exigerModele();
+exigerSelection();
+
+const SRC_PROP = "import.sourceId";
+const src = model;
+const others = $.model.getLoadedModels().filter(m => m.id !== src.id);
+if (others.length === 0) { window.alert("Ouvre le modèle cible."); exit(); }
+const choix = window.prompt(others.map((m, i) => i + " : " + m.name).join("\n"), "0");
+const tgt = others[parseInt(choix, 10)];
+if (!tgt) exit();
+
+const map = {}; // id source -> concept cible
+
+function existing(c) {
+  const f = $(tgt).find(c.type).filter(x => x.prop(SRC_PROP) === c.id);
+  return f.size() > 0 ? f.first() : null;
+}
+
+function copyMeta(s, t) {
+  t.documentation = s.documentation;
+  s.prop().forEach(k => t.prop(k, s.prop(k)));
+  t.prop(SRC_PROP, s.id);
+  if (s.specialization) {
+    if (!tgt.findSpecialization(s.specialization, s.type))
+      tgt.createSpecialization(s.specialization, s.type);
+    t.specialization = s.specialization;
+  }
+}
+
+function copyConcept(c) {
+  if (map[c.id]) return map[c.id];
+  let t = existing(c);
+  if (!t) {
+    if (c.type.endsWith("-relationship")) {
+      const s = copyConcept(c.source), d = copyConcept(c.target);
+      t = tgt.createRelationship(c.type, c.name, s, d);
+      if (c.type === "access-relationship") t.accessType = c.accessType;
+      if (c.type === "influence-relationship") t.influenceStrength = c.influenceStrength;
+      if (c.type === "association-relationship") t.associationDirected = c.associationDirected;
+    } else {
+      t = tgt.createElement(c.type, c.name);
+      if (c.type === "junction") t.junctionType = c.junctionType;
+    }
+  }
+  copyMeta(c, t);
+  return (map[c.id] = t);
+}
+
+function copyView(v) {
+  const nv = tgt.createArchimateView(v.name);
+  nv.documentation = v.documentation;
+  const dmap = {};
+
+  (function walk(sp, tp) {
+    $(sp).children().each(o => {
+      const b = o.bounds;
+      let n;
+      if (o.type === "diagram-model-note") { n = tp.createObject("note", b.x, b.y, b.width, b.height); n.text = o.text; }
+      else if (o.type === "diagram-model-group") { n = tp.createObject("group", b.x, b.y, b.width, b.height); n.name = o.name; }
+      else if (o.concept && !o.concept.type.endsWith("-relationship")) { n = tp.add(copyConcept(o.concept), b.x, b.y, b.width, b.height); }
+      else return;
+      if (o.fillColor) n.fillColor = o.fillColor;
+      if (o.fontColor) n.fontColor = o.fontColor;
+      dmap[o.id] = n;
+      walk(o, n);
+    });
+  })(v, nv);
+
+  $(v).find("relationship").each(c => {
+    const s = dmap[c.source.id], d = dmap[c.target.id];
+    if (!s || !d) return; // connexion vers une connexion : non gérée
+    const n = nv.add(copyConcept(c.concept), s, d);
+    (c.relativeBendpoints || []).forEach((bp, i) => n.addRelativeBendpoint(bp, i));
+  });
+}
+
+function handle(o) {
+  if (o.type === "folder") $(o).children().each(handle);
+  else if (o.type === "archimate-diagram-model") copyView(o);
+  else if (o.concept) copyConcept(o.concept);   // objet sélectionné dans une vue
+  else copyConcept(o);                          // concept sélectionné dans l'arbre
+}
+
+$(selection).each(handle);
+console.log("Import terminé : " + Object.keys(map).length + " concepts.");
