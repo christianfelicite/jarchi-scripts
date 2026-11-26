@@ -25,3 +25,34 @@ function titre(texte) {
     console.log("");
     console.log("== " + texte + " ==");
 }
+
+/** Lit une propriété jArchi sans planter si elle n'existe pas pour ce type. */
+function lire(o, nom) {
+    try {
+        var v = o[nom];
+        return (v === null || v === undefined || v === "") ? undefined : v;
+    } catch (e) {
+        return undefined;
+    }
+}
+
+/**
+ * Vues ArchiMate de la sélection, sans doublon : vues de l'arbre du modèle
+ * ou vue contenant l'objet sélectionné dans un diagramme.
+ */
+function vuesSelectionnees() {
+    var vues = [], vus = {};
+    $(selection).each(function (o) {
+        var v = o.type === "archimate-diagram-model" ? o : lire(o, "view");
+        if (v && v.type === "archimate-diagram-model" && !vus[v.id]) {
+            vus[v.id] = true;
+            vues.push(v);
+        }
+    });
+    return vues;
+}
+
+/** Nom de fichier sûr, dérivé d'un libellé. */
+function nomDeFichier(libelle, extension) {
+    return String(libelle).replace(/[\\\/:*?"<>|]/g, "_") + "." + extension;
+}

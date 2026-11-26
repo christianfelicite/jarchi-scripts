@@ -81,16 +81,6 @@ var POSITION = { 0: "top", 1: "middle", 2: "bottom" };
 
 // ---------------------------------------------------------------------------
 
-/** Lit une propriété jArchi sans planter si elle n'existe pas pour ce type. */
-function lire(o, nom) {
-    try {
-        var v = o[nom];
-        return (v === null || v === undefined || v === "") ? undefined : v;
-    } catch (e) {
-        return undefined;
-    }
-}
-
 function xml(s) {
     return String(s === undefined || s === null ? "" : s)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -261,18 +251,6 @@ function exporterVue(vue) {
         '</root></mxGraphModel></diagram>';
 }
 
-function vuesSelectionnees() {
-    var vues = [], vus = {};
-    $(selection).each(function (o) {
-        var v = o.type === "archimate-diagram-model" ? o : lire(o, "view");
-        if (v && v.type === "archimate-diagram-model" && !vus[v.id]) {
-            vus[v.id] = true;
-            vues.push(v);
-        }
-    });
-    return vues;
-}
-
 // ---------------------------------------------------------------------------
 
 exigerModele();
@@ -285,7 +263,7 @@ if (vues.length === 0) {
     exit();
 }
 
-var nomFichier = (vues.length === 1 ? vues[0].name : model.name).replace(/[\\\/:*?"<>|]/g, "_") + ".drawio";
+var nomFichier = nomDeFichier(vues.length === 1 ? vues[0].name : model.name, "drawio");
 var chemin = window.promptSaveFile({
     title: "Exporter vers draw.io",
     filterExtensions: ["*.drawio"],

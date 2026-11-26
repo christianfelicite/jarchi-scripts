@@ -1,0 +1,246 @@
+/*
+ * Objectif   : afficher les éléments d'une ou plusieurs vues dans un tableau,
+ *              puis les exporter au format CSV.
+ * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
+ *              ou un objet dans une vue ouverte.
+ * Effets     : aucun sur le modèle. Écrit un fichier .csv à la demande.
+ * Tableau    : une ligne par élément, même s'il figure plusieurs fois.
+ *              Colonnes : nom, type, spécialisation, documentation, une colonne
+ *              par clé de propriété rencontrée, vues (si plusieurs), identifiant.
+ *              Clic sur un en-tête : tri. Champ « Filtrer » : recherche sur
+ *              toutes les colonnes.
+ * CSV        : exporte les lignes affichées, dans l'ordre affiché.
+ *              UTF-8 avec BOM, séparateur « ; » : lisible tel quel par Excel FR.
+ */
+load(__DIR__ + "../lib/commun.js");
+
+var SEPARATEUR = ";";
+var LARGEUR_MAX_COLONNE = 400;
+
+var SWT = Java.type("org.eclipse.swt.SWT");
+var Shell = Java.type("org.eclipse.swt.widgets.Shell");
+var Label = Java.type("org.eclipse.swt.widgets.Label");
+var Text = Java.type("org.eclipse.swt.widgets.Text");
+var Button = Java.type("org.eclipse.swt.widgets.Button");
+var Table = Java.type("org.eclipse.swt.widgets.Table");
+var TableColumn = Java.type("org.eclipse.swt.widgets.TableColumn");
+var TableItem = Java.type("org.eclipse.swt.widgets.TableItem");
+var GridLayout = Java.type("org.eclipse.swt.layout.GridLayout");
+var GridData = Java.type("org.eclipse.swt.layout.GridData");
+
+// ---------------------------------------------------------------------------
+// Données
+
+/** « business-actor » → « Business Actor ». */
+function libelleType(type) {
+    return String(type).split("-").map(function (m) {
+        return m.charAt(0).toUpperCase() + m.slice(1);
+    }).join(" ");
+}
+
+function texte(v) {
+    return v === undefined || v === null ? "" : String(v);
+}
+
+/** Une ligne par élément distinct ; clés de propriétés dans l'ordre de rencontre. */
+function collecter(vues) {
+    var lignes = [], parId = {}, cles = [], clesVues = {};
+    vues.forEach(function (vue) {
+        $(vue).find("element").each(function (o) {
+            var e = lire(o, "concept");
+            if (!e) return;
+            var ligne = parId[e.id];
+            if (!ligne) {
+                ligne = {
+                    id: e.id,
+                    nom: texte(lire(e, "name")),
+                    type: libelleType(e.type),
+                    specialisation: texte(lire(e, "specialization")),
+                    documentation: texte(lire(e, "documentation")),
+                    proprietes: {},
+                    vues: []
+                };
+                var props = e.prop();
+                for (var i = 0; i < props.length; i++) {
+                    var cle = String(props[i]);
+                    ligne.proprietes[cle] = texte(e.prop(cle));
+                    if (!clesVues[cle]) {
+                        clesVues[cle] = true;
+                        cles.push(cle);
+                    }
+                }
+                parId[e.id] = ligne;
+                lignes.push(ligne);
+            }
+            if (ligne.vues.indexOf(vue.name) < 0) ligne.vues.push(vue.name);
+        });
+    });
+    return { lignes: lignes, cles: cles };
+}
+
+/** Définition des colonnes : titre + accesseur. */
+function colonnes(cles, plusieursVues) {
+    var cols = [
+        { titre: "Nom", valeur: function (l) { return l.nom; } },
+        { titre: "Type", valeur: function (l) { return l.type; } },
+        { titre: "Spécialisation", valeur: function (l) { return l.specialisation; } },
+        { titre: "Documentation", valeur: function (l) { return l.documentation; } }
+    ];
+    cles.forEach(function (cle) {
+        cols.push({ titre: cle, valeur: function (l) { return texte(l.proprietes[cle]); } });
+    });
+    if (plusieursVues) cols.push({ titre: "Vues", valeur: function (l) { return l.vues.join(", "); } });
+    cols.push({ titre: "Identifiant", valeur: function (l) { return l.id; } });
+    return cols;
+}
+
+// ---------------------------------------------------------------------------
+// CSV
+
+function champCsv(v) {
+    var s = texte(v);
+    return /["\r\n]/.test(s) || s.indexOf(SEPARATEUR) >= 0 ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function versCsv(cols, lignes) {
+    var sortie = [cols.map(function (c) { return champCsv(c.titre); }).join(SEPARATEUR)];
+    lignes.forEach(function (l) {
+        sortie.push(cols.map(function (c) { return champCsv(c.valeur(l)); }).join(SEPARATEUR));
+    });
+    return "﻿" + sortie.join("\r\n") + "\r\n";
+}
+
+// ---------------------------------------------------------------------------
+// Fenêtre
+
+function afficher(titreFenetre, cols, lignes, nomCsv) {
+    var affichees = lignes.slice();
+    var tri = { index: -1, croissant: true };
+
+    var fenetre = new Shell(shell, SWT.DIALOG_TRIM | SWT.RESIZE | SWT.APPLICATION_MODAL);
+    fenetre.setText(titreFenetre);
+    fenetre.setLayout(new GridLayout(4, false));
+
+    new Label(fenetre, SWT.NONE).setText("Filtrer :");
+    var filtre = new Text(fenetre, SWT.BORDER | SWT.SEARCH | SWT.ICON_CANCEL);
+    filtre.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+    var compteur = new Label(fenetre, SWT.NONE);
+    compteur.setLayoutData(new GridData(SWT.END, SWT.CENTER, false, false, 2, 1));
+
+    var tableau = new Table(fenetre, SWT.BORDER | SWT.FULL_SELECTION | SWT.MULTI);
+    tableau.setHeaderVisible(true);
+    tableau.setLinesVisible(true);
+    var gd = new GridData(SWT.FILL, SWT.FILL, true, true, 4, 1);
+    gd.widthHint = 1000;
+    gd.heightHint = 500;
+    tableau.setLayoutData(gd);
+
+    var etat = new Label(fenetre, SWT.NONE);
+    etat.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 2, 1));
+    var exporter = new Button(fenetre, SWT.PUSH);
+    exporter.setText("Exporter en CSV…");
+    var fermer = new Button(fenetre, SWT.PUSH);
+    fermer.setText("Fermer");
+
+    var colonnesSwt = cols.map(function (c, index) {
+        var col = new TableColumn(tableau, SWT.LEFT);
+        col.setText(c.titre);
+        col.addListener(SWT.Selection, function () { trier(index, col); });
+        return col;
+    });
+
+    function remplir() {
+        tableau.setRedraw(false);
+        tableau.removeAll();
+        affichees.forEach(function (l) {
+            var item = new TableItem(tableau, SWT.NONE);
+            cols.forEach(function (c, i) {
+                item.setText(i, c.valeur(l).replace(/\s*[\r\n]+\s*/g, " "));
+            });
+        });
+        tableau.setRedraw(true);
+        compteur.setText(affichees.length + " / " + lignes.length + " élément(s)");
+        compteur.getParent().layout();
+    }
+
+    function filtrer() {
+        var motif = texte(filtre.getText()).toLowerCase();
+        affichees = lignes.filter(function (l) {
+            return !motif || cols.some(function (c) {
+                return c.valeur(l).toLowerCase().indexOf(motif) >= 0;
+            });
+        });
+        if (tri.index >= 0) ordonner();
+        remplir();
+    }
+
+    function ordonner() {
+        var c = cols[tri.index], signe = tri.croissant ? 1 : -1;
+        affichees.sort(function (a, b) {
+            var x = c.valeur(a).toLowerCase(), y = c.valeur(b).toLowerCase();
+            return x < y ? -signe : x > y ? signe : 0;
+        });
+    }
+
+    function trier(index, col) {
+        tri.croissant = tri.index === index ? !tri.croissant : true;
+        tri.index = index;
+        tableau.setSortColumn(col);
+        tableau.setSortDirection(tri.croissant ? SWT.UP : SWT.DOWN);
+        ordonner();
+        remplir();
+    }
+
+    filtre.addListener(SWT.Modify, filtrer);
+    fermer.addListener(SWT.Selection, function () { fenetre.close(); });
+    exporter.addListener(SWT.Selection, function () {
+        var chemin = window.promptSaveFile({
+            title: "Exporter en CSV",
+            filterExtensions: ["*.csv"],
+            fileName: nomCsv
+        });
+        if (!chemin) return;
+        $.fs.writeFile(chemin, versCsv(cols, affichees));
+        etat.setText(affichees.length + " ligne(s) écrite(s) dans " + chemin);
+        console.log(affichees.length + " ligne(s) écrite(s) dans " + chemin);
+    });
+
+    remplir();
+    colonnesSwt.forEach(function (col) {
+        col.pack();
+        if (col.getWidth() > LARGEUR_MAX_COLONNE) col.setWidth(LARGEUR_MAX_COLONNE);
+    });
+    fenetre.setDefaultButton(fermer);
+    fenetre.pack();
+    fenetre.open();
+
+    var ecran = fenetre.getDisplay();
+    while (!fenetre.isDisposed()) {
+        if (!ecran.readAndDispatch()) ecran.sleep();
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+exigerModele();
+console.clear();
+titre("Vue en tableau");
+
+var vues = vuesSelectionnees();
+if (vues.length === 0) {
+    console.error("Aucune vue ArchiMate dans la sélection.");
+    exit();
+}
+
+var donnees = collecter(vues);
+if (donnees.lignes.length === 0) {
+    console.log("Aucun élément dans la sélection de vues.");
+    exit();
+}
+
+var libelle = vues.length === 1 ? vues[0].name : model.name;
+console.log(donnees.lignes.length + " élément(s) dans " + vues.length + " vue(s).");
+afficher("Éléments — " + libelle,
+    colonnes(donnees.cles, vues.length > 1),
+    donnees.lignes,
+    nomDeFichier(libelle, "csv"));
