@@ -1,16 +1,19 @@
 /*
- * Objectif   : afficher les éléments d'une ou plusieurs vues dans un tableau,
- *              puis les exporter au format CSV.
+ * Objectif   : afficher les éléments et les relations d'une ou plusieurs vues
+ *              dans des tableaux, puis les exporter au format CSV.
  * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
  *              ou un objet dans une vue ouverte.
  * Effets     : aucun sur le modèle. Écrit un fichier .csv à la demande.
- * Tableau    : une ligne par élément, même s'il figure plusieurs fois.
- *              Colonnes : nom, type, spécialisation, documentation, une colonne
- *              par clé de propriété rencontrée, vues (si plusieurs), identifiant.
+ * Tableaux   : un onglet « Éléments », un onglet « Relations ». Une ligne par
+ *              concept, même s'il figure plusieurs fois.
+ *              Colonnes communes : nom, type, spécialisation, documentation,
+ *              une colonne par clé de propriété rencontrée, vues (si plusieurs),
+ *              identifiant. Les relations ajoutent source et cible avec leur type.
  *              Clic sur un en-tête : tri. Champ « Filtrer » : recherche sur
- *              toutes les colonnes.
- * CSV        : exporte les lignes affichées, dans l'ordre affiché.
- *              UTF-8 avec BOM, séparateur « ; » : lisible tel quel par Excel FR.
+ *              toutes les colonnes de l'onglet.
+ * CSV        : exporte les lignes affichées de l'onglet actif, dans l'ordre
+ *              affiché. UTF-8 avec BOM, séparateur « ; » : lisible tel quel par
+ *              Excel FR.
  */
 load(__DIR__ + "../lib/commun.js");
 
@@ -19,6 +22,9 @@ var LARGEUR_MAX_COLONNE = 400;
 
 var SWT = Java.type("org.eclipse.swt.SWT");
 var Shell = Java.type("org.eclipse.swt.widgets.Shell");
+var Composite = Java.type("org.eclipse.swt.widgets.Composite");
+var TabFolder = Java.type("org.eclipse.swt.widgets.TabFolder");
+var TabItem = Java.type("org.eclipse.swt.widgets.TabItem");
 var Label = Java.type("org.eclipse.swt.widgets.Label");
 var Text = Java.type("org.eclipse.swt.widgets.Text");
 var Button = Java.type("org.eclipse.swt.widgets.Button");
@@ -42,34 +48,39 @@ function texte(v) {
     return v === undefined || v === null ? "" : String(v);
 }
 
-/** Une ligne par élément distinct ; clés de propriétés dans l'ordre de rencontre. */
-function collecter(vues) {
+/**
+ * Une ligne par concept distinct trouvé par le sélecteur jArchi dans les vues ;
+ * clés de propriétés dans l'ordre de rencontre. completer(concept, ligne)
+ * ajoute les champs propres au genre de concept.
+ */
+function collecter(vues, selecteur, completer) {
     var lignes = [], parId = {}, cles = [], clesVues = {};
     vues.forEach(function (vue) {
-        $(vue).find("element").each(function (o) {
-            var e = lire(o, "concept");
-            if (!e) return;
-            var ligne = parId[e.id];
+        $(vue).find(selecteur).each(function (o) {
+            var c = lire(o, "concept");
+            if (!c) return;
+            var ligne = parId[c.id];
             if (!ligne) {
                 ligne = {
-                    id: e.id,
-                    nom: texte(lire(e, "name")),
-                    type: libelleType(e.type),
-                    specialisation: texte(lire(e, "specialization")),
-                    documentation: texte(lire(e, "documentation")),
+                    id: c.id,
+                    nom: texte(lire(c, "name")),
+                    type: libelleType(c.type),
+                    specialisation: texte(lire(c, "specialization")),
+                    documentation: texte(lire(c, "documentation")),
                     proprietes: {},
                     vues: []
                 };
-                var props = e.prop();
+                var props = c.prop();
                 for (var i = 0; i < props.length; i++) {
                     var cle = String(props[i]);
-                    ligne.proprietes[cle] = texte(e.prop(cle));
+                    ligne.proprietes[cle] = texte(c.prop(cle));
                     if (!clesVues[cle]) {
                         clesVues[cle] = true;
                         cles.push(cle);
                     }
                 }
-                parId[e.id] = ligne;
+                if (completer) completer(c, ligne);
+                parId[c.id] = ligne;
                 lignes.push(ligne);
             }
             if (ligne.vues.indexOf(vue.name) < 0) ligne.vues.push(vue.name);
@@ -78,19 +89,33 @@ function collecter(vues) {
     return { lignes: lignes, cles: cles };
 }
 
-/** Définition des colonnes : titre + accesseur. */
-function colonnes(cles, plusieursVues) {
-    var cols = [
-        { titre: "Nom", valeur: function (l) { return l.nom; } },
-        { titre: "Type", valeur: function (l) { return l.type; } },
-        { titre: "Spécialisation", valeur: function (l) { return l.specialisation; } },
-        { titre: "Documentation", valeur: function (l) { return l.documentation; } }
-    ];
+/** Extrémités d'une relation. Une extrémité peut être elle-même une relation. */
+function extremites(r, ligne) {
+    ligne.source = texte(lire(r.source, "name"));
+    ligne.typeSource = libelleType(r.source.type);
+    ligne.cible = texte(lire(r.target, "name"));
+    ligne.typeCible = libelleType(r.target.type);
+}
+
+function colonne(titre, champ) {
+    return { titre: titre, valeur: function (l) { return texte(l[champ]); } };
+}
+
+var DEBUT_ELEMENTS = [colonne("Nom", "nom"), colonne("Type", "type")];
+var DEBUT_RELATIONS = [
+    colonne("Nom", "nom"), colonne("Type", "type"),
+    colonne("Source", "source"), colonne("Type source", "typeSource"),
+    colonne("Cible", "cible"), colonne("Type cible", "typeCible")
+];
+
+/** Colonnes : début propre au genre, puis colonnes communes. */
+function colonnes(debut, cles, plusieursVues) {
+    var cols = debut.concat([colonne("Spécialisation", "specialisation"), colonne("Documentation", "documentation")]);
     cles.forEach(function (cle) {
         cols.push({ titre: cle, valeur: function (l) { return texte(l.proprietes[cle]); } });
     });
     if (plusieursVues) cols.push({ titre: "Vues", valeur: function (l) { return l.vues.join(", "); } });
-    cols.push({ titre: "Identifiant", valeur: function (l) { return l.id; } });
+    cols.push(colonne("Identifiant", "id"));
     return cols;
 }
 
@@ -113,34 +138,33 @@ function versCsv(cols, lignes) {
 // ---------------------------------------------------------------------------
 // Fenêtre
 
-function afficher(titreFenetre, cols, lignes, nomCsv) {
+/**
+ * Onglet : filtre, compteur et tableau triable.
+ * Retourne { cols, affichees() } pour l'export.
+ */
+function onglet(dossier, titre, cols, lignes) {
     var affichees = lignes.slice();
     var tri = { index: -1, croissant: true };
 
-    var fenetre = new Shell(shell, SWT.DIALOG_TRIM | SWT.RESIZE | SWT.APPLICATION_MODAL);
-    fenetre.setText(titreFenetre);
-    fenetre.setLayout(new GridLayout(4, false));
+    var panneau = new Composite(dossier, SWT.NONE);
+    panneau.setLayout(new GridLayout(3, false));
+    var item = new TabItem(dossier, SWT.NONE);
+    item.setText(titre + " (" + lignes.length + ")");
+    item.setControl(panneau);
 
-    new Label(fenetre, SWT.NONE).setText("Filtrer :");
-    var filtre = new Text(fenetre, SWT.BORDER | SWT.SEARCH | SWT.ICON_CANCEL);
+    new Label(panneau, SWT.NONE).setText("Filtrer :");
+    var filtre = new Text(panneau, SWT.BORDER | SWT.SEARCH | SWT.ICON_CANCEL);
     filtre.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
-    var compteur = new Label(fenetre, SWT.NONE);
-    compteur.setLayoutData(new GridData(SWT.END, SWT.CENTER, false, false, 2, 1));
+    var compteur = new Label(panneau, SWT.NONE);
+    compteur.setLayoutData(new GridData(SWT.END, SWT.CENTER, false, false));
 
-    var tableau = new Table(fenetre, SWT.BORDER | SWT.FULL_SELECTION | SWT.MULTI);
+    var tableau = new Table(panneau, SWT.BORDER | SWT.FULL_SELECTION | SWT.MULTI);
     tableau.setHeaderVisible(true);
     tableau.setLinesVisible(true);
-    var gd = new GridData(SWT.FILL, SWT.FILL, true, true, 4, 1);
+    var gd = new GridData(SWT.FILL, SWT.FILL, true, true, 3, 1);
     gd.widthHint = 1000;
     gd.heightHint = 500;
     tableau.setLayoutData(gd);
-
-    var etat = new Label(fenetre, SWT.NONE);
-    etat.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 2, 1));
-    var exporter = new Button(fenetre, SWT.PUSH);
-    exporter.setText("Exporter en CSV…");
-    var fermer = new Button(fenetre, SWT.PUSH);
-    fermer.setText("Fermer");
 
     var colonnesSwt = cols.map(function (c, index) {
         var col = new TableColumn(tableau, SWT.LEFT);
@@ -153,14 +177,22 @@ function afficher(titreFenetre, cols, lignes, nomCsv) {
         tableau.setRedraw(false);
         tableau.removeAll();
         affichees.forEach(function (l) {
-            var item = new TableItem(tableau, SWT.NONE);
+            var ligne = new TableItem(tableau, SWT.NONE);
             cols.forEach(function (c, i) {
-                item.setText(i, c.valeur(l).replace(/\s*[\r\n]+\s*/g, " "));
+                ligne.setText(i, c.valeur(l).replace(/\s*[\r\n]+\s*/g, " "));
             });
         });
         tableau.setRedraw(true);
-        compteur.setText(affichees.length + " / " + lignes.length + " élément(s)");
-        compteur.getParent().layout();
+        compteur.setText(affichees.length + " / " + lignes.length);
+        panneau.layout();
+    }
+
+    function ordonner() {
+        var c = cols[tri.index], signe = tri.croissant ? 1 : -1;
+        affichees.sort(function (a, b) {
+            var x = c.valeur(a).toLowerCase(), y = c.valeur(b).toLowerCase();
+            return x < y ? -signe : x > y ? signe : 0;
+        });
     }
 
     function filtrer() {
@@ -174,14 +206,6 @@ function afficher(titreFenetre, cols, lignes, nomCsv) {
         remplir();
     }
 
-    function ordonner() {
-        var c = cols[tri.index], signe = tri.croissant ? 1 : -1;
-        affichees.sort(function (a, b) {
-            var x = c.valeur(a).toLowerCase(), y = c.valeur(b).toLowerCase();
-            return x < y ? -signe : x > y ? signe : 0;
-        });
-    }
-
     function trier(index, col) {
         tri.croissant = tri.index === index ? !tri.croissant : true;
         tri.index = index;
@@ -192,24 +216,47 @@ function afficher(titreFenetre, cols, lignes, nomCsv) {
     }
 
     filtre.addListener(SWT.Modify, filtrer);
-    fermer.addListener(SWT.Selection, function () { fenetre.close(); });
-    exporter.addListener(SWT.Selection, function () {
-        var chemin = window.promptSaveFile({
-            title: "Exporter en CSV",
-            filterExtensions: ["*.csv"],
-            fileName: nomCsv
-        });
-        if (!chemin) return;
-        $.fs.writeFile(chemin, versCsv(cols, affichees));
-        etat.setText(affichees.length + " ligne(s) écrite(s) dans " + chemin);
-        console.log(affichees.length + " ligne(s) écrite(s) dans " + chemin);
-    });
-
     remplir();
     colonnesSwt.forEach(function (col) {
         col.pack();
         if (col.getWidth() > LARGEUR_MAX_COLONNE) col.setWidth(LARGEUR_MAX_COLONNE);
     });
+
+    return { titre: titre, cols: cols, affichees: function () { return affichees; } };
+}
+
+/** contenus : [{ titre, cols, lignes }]. */
+function afficher(titreFenetre, contenus, libelleFichier) {
+    var fenetre = new Shell(shell, SWT.DIALOG_TRIM | SWT.RESIZE | SWT.APPLICATION_MODAL);
+    fenetre.setText(titreFenetre);
+    fenetre.setLayout(new GridLayout(3, false));
+
+    var dossier = new TabFolder(fenetre, SWT.NONE);
+    dossier.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true, 3, 1));
+    var onglets = contenus.map(function (c) { return onglet(dossier, c.titre, c.cols, c.lignes); });
+
+    var etat = new Label(fenetre, SWT.NONE);
+    etat.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+    var exporter = new Button(fenetre, SWT.PUSH);
+    exporter.setText("Exporter l'onglet en CSV…");
+    var fermer = new Button(fenetre, SWT.PUSH);
+    fermer.setText("Fermer");
+
+    fermer.addListener(SWT.Selection, function () { fenetre.close(); });
+    exporter.addListener(SWT.Selection, function () {
+        var o = onglets[Math.max(0, dossier.getSelectionIndex())];
+        var chemin = window.promptSaveFile({
+            title: "Exporter « " + o.titre + " » en CSV",
+            filterExtensions: ["*.csv"],
+            fileName: nomDeFichier(libelleFichier + " - " + o.titre.toLowerCase(), "csv")
+        });
+        if (!chemin) return;
+        var lignes = o.affichees();
+        $.fs.writeFile(chemin, versCsv(o.cols, lignes));
+        etat.setText(o.titre + " : " + lignes.length + " ligne(s) écrite(s) dans " + chemin);
+        console.log(o.titre + " : " + lignes.length + " ligne(s) écrite(s) dans " + chemin);
+    });
+
     fenetre.setDefaultButton(fermer);
     fenetre.pack();
     fenetre.open();
@@ -232,15 +279,18 @@ if (vues.length === 0) {
     exit();
 }
 
-var donnees = collecter(vues);
-if (donnees.lignes.length === 0) {
-    console.log("Aucun élément dans la sélection de vues.");
+var elements = collecter(vues, "element");
+var relations = collecter(vues, "relationship", extremites);
+if (elements.lignes.length + relations.lignes.length === 0) {
+    console.log("Aucun élément ni relation dans la sélection de vues.");
     exit();
 }
 
+var plusieursVues = vues.length > 1;
 var libelle = vues.length === 1 ? vues[0].name : model.name;
-console.log(donnees.lignes.length + " élément(s) dans " + vues.length + " vue(s).");
-afficher("Éléments — " + libelle,
-    colonnes(donnees.cles, vues.length > 1),
-    donnees.lignes,
-    nomDeFichier(libelle, "csv"));
+console.log(elements.lignes.length + " élément(s), " + relations.lignes.length +
+    " relation(s) dans " + vues.length + " vue(s).");
+afficher("Éléments et relations — " + libelle, [
+    { titre: "Éléments", cols: colonnes(DEBUT_ELEMENTS, elements.cles, plusieursVues), lignes: elements.lignes },
+    { titre: "Relations", cols: colonnes(DEBUT_RELATIONS, relations.cles, plusieursVues), lignes: relations.lignes }
+], libelle);
