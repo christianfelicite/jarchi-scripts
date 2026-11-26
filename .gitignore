@@ -1,0 +1,13 @@
+# Modèles et sauvegardes Archi
+*.archimate
+*.bak
+
+# Exports
+*.csv
+*.html
+*.pdf
+exports/
+
+# Système
+.DS_Store
+Thumbs.db

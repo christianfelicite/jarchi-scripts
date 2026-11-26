@@ -1,0 +1,21 @@
+/*
+ * Objectif   : lister les éléments sans aucune relation.
+ * Prérequis  : un modèle sélectionné.
+ * Effets     : aucun. Lecture seule.
+ */
+load(__DIR__ + "../lib/commun.js");
+
+exigerModele();
+console.clear();
+titre("Éléments orphelins");
+
+var orphelins = $("element").filter(function (e) {
+    return $(e).rels().size() === 0;
+});
+
+orphelins.each(function (e) {
+    console.log(e.type + "\t" + e.name);
+});
+
+console.log("");
+console.log(orphelins.size() + " élément(s) sans relation.");
