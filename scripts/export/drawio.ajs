@@ -1,0 +1,272 @@
+/*
+ * Objectif   : exporter une ou plusieurs vues ArchiMate au format draw.io.
+ * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
+ *              ou un objet dans une vue ouverte.
+ * Effets     : aucun sur le modèle. Écrit un fichier .drawio, une page par vue.
+ * Fidélité   : positions, tailles, imbrication, couleurs, libellés et
+ *              propriétés sont conservés. Les formes sont des rectangles
+ *              colorés par couche, pas les pictogrammes ArchiMate de draw.io.
+ *              Les points de cassure des connexions sont approximés.
+ *              Les images sont ignorées.
+ */
+load(__DIR__ + "../lib/commun.js");
+
+var TAILLE_DEFAUT = { width: 120, height: 55 };
+
+// Couleurs par défaut d'Archi, par couche.
+var COULEURS = {
+    strategie: "#F5DEAA",
+    metier: "#FFFFB5",
+    application: "#B5FFFF",
+    technologie: "#C9E7B7",
+    motivation: "#CCCCFF",
+    implementation: "#FFE0E0",
+    localisation: "#FBB875",
+    autre: "#FFFFFF"
+};
+
+// Une règle par couche plutôt qu'une table par type.
+var COUCHES = [
+    ["metier", /^(business-.*|contract|representation|product)$/],
+    ["application", /^(application-.*|data-object)$/],
+    ["technologie", /^(technology-.*|node|device|system-software|communication-network|path|artifact|equipment|facility|distribution-network|material)$/],
+    ["motivation", /^(stakeholder|driver|assessment|goal|outcome|principle|requirement|constraint|meaning|value)$/],
+    ["strategie", /^(resource|capability|value-stream|course-of-action)$/],
+    ["implementation", /^(work-package|deliverable|implementation-event|plateau|gap)$/],
+    ["localisation", /^location$/]
+];
+
+// Notation des relations ArchiMate en style draw.io.
+var RELATIONS = {
+    "composition-relationship": "startArrow=diamondThin;startFill=1;startSize=12",
+    "aggregation-relationship": "startArrow=diamondThin;startFill=0;startSize=12",
+    "assignment-relationship": "startArrow=oval;startFill=1;endArrow=block;endFill=1",
+    "realization-relationship": "dashed=1;endArrow=block;endFill=0",
+    "serving-relationship": "endArrow=open",
+    "access-relationship": "dashed=1;dashPattern=1 4",
+    "influence-relationship": "dashed=1;endArrow=open",
+    "triggering-relationship": "endArrow=block;endFill=1",
+    "flow-relationship": "dashed=1;dashPattern=6 4;endArrow=block;endFill=1",
+    "specialization-relationship": "endArrow=block;endFill=0;endSize=12"
+};
+
+var SENS_ACCES = {
+    write: "endArrow=open",
+    read: "startArrow=open",
+    readwrite: "startArrow=open;endArrow=open",
+    access: ""
+};
+
+// Codes Archi : textAlignment 1/2/4, textPosition 0/1/2.
+var ALIGNEMENT = { 1: "left", 2: "center", 4: "right" };
+var POSITION = { 0: "top", 1: "middle", 2: "bottom" };
+
+// ---------------------------------------------------------------------------
+
+/** Lit une propriété jArchi sans planter si elle n'existe pas pour ce type. */
+function lire(o, nom) {
+    try {
+        var v = o[nom];
+        return (v === null || v === undefined || v === "") ? undefined : v;
+    } catch (e) {
+        return undefined;
+    }
+}
+
+function xml(s) {
+    return String(s === undefined || s === null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/\r?\n/g, "&#10;");
+}
+
+/** Libellé interprété en HTML par draw.io (html=1, nécessaire au retour à la ligne). */
+function libelle(s) {
+    return xml(String(s === undefined ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/\r?\n/g, "<br>"));
+}
+
+/** Fusionne "k=v;k=v" dans un objet de style. Les clés suivantes écrasent. */
+function fusionner(style, texte) {
+    if (!texte) return style;
+    texte.split(";").forEach(function (paire) {
+        if (!paire) return;
+        var i = paire.indexOf("=");
+        if (i < 0) style[paire] = null; else style[paire.slice(0, i)] = paire.slice(i + 1);
+    });
+    return style;
+}
+
+function serialiser(style) {
+    return Object.keys(style).map(function (k) {
+        return style[k] === null ? k : k + "=" + style[k];
+    }).join(";") + ";";
+}
+
+function estConnexion(o) {
+    return /-relationship$/.test(o.type) || o.type === "diagram-model-connection";
+}
+
+function couche(type) {
+    for (var i = 0; i < COUCHES.length; i++) {
+        if (COUCHES[i][1].test(type)) return COUCHES[i][0];
+    }
+    return "autre";
+}
+
+/** Type ArchiMate, documentation et propriétés, en attributs du UserObject. */
+function metadonnees(o) {
+    var c = lire(o, "concept");
+    if (!c) return "";
+    var attrs = ' archimateType="' + xml(o.type) + '"';
+    var doc = lire(c, "documentation");
+    if (doc) attrs += ' tooltip="' + xml(doc) + '"';
+    var reserves = { id: 1, label: 1, placeholders: 1, tooltip: 1, link: 1, archimateType: 1 };
+    var cles = c.prop() || [];
+    for (var i = 0; i < cles.length; i++) {
+        var nom = String(cles[i]).replace(/[^A-Za-z0-9_.-]/g, "_");
+        if (!/^[A-Za-z_]/.test(nom)) nom = "_" + nom;
+        if (reserves[nom]) continue;   // doublon ou nom réservé
+        reserves[nom] = 1;
+        attrs += " " + nom + '="' + xml(c.prop(cles[i])) + '"';
+    }
+    return attrs;
+}
+
+function styleNoeud(o, estConteneur) {
+    var t = o.type;
+    var s = fusionner({}, "whiteSpace=wrap;html=1;verticalAlign=top;align=center");
+
+    if (t === "diagram-model-note") {
+        fusionner(s, "shape=note;size=12;align=left;spacingLeft=4;fillColor=#FFFFFF");
+    } else if (t === "diagram-model-group") {
+        fusionner(s, "rounded=0;align=left;spacingLeft=4;fontStyle=1;fillColor=#D2D7D7");
+    } else if (t === "diagram-model-reference") {
+        fusionner(s, "rounded=0;dashed=1;fillColor=#DCEBFF");
+    } else if (t === "grouping") {
+        fusionner(s, "rounded=0;dashed=1;align=left;spacingLeft=4;fillColor=none");
+    } else if (t === "junction") {
+        var ou = lire(lire(o, "concept") || {}, "junctionType") === "or";
+        fusionner(s, "ellipse;aspect=fixed;fillColor=" + (ou ? "#FFFFFF" : "#000000"));
+    } else {
+        // Comportement : coins arrondis. Service : forme de pilule.
+        var comportement = /(process|function|interaction|event|service)$/.test(t);
+        fusionner(s, "rounded=" + (comportement ? 1 : 0) + ";fillColor=" + COULEURS[couche(t)]);
+        if (/service$/.test(t)) fusionner(s, "arcSize=50");
+    }
+
+    if (estConteneur) fusionner(s, "container=1;collapsible=0");
+
+    // Personnalisations faites dans Archi.
+    var v;
+    if ((v = lire(o, "fillColor"))) s.fillColor = v;
+    if ((v = lire(o, "lineColor"))) s.strokeColor = v;
+    if ((v = lire(o, "fontColor"))) s.fontColor = v;
+    if ((v = lire(o, "fontSize"))) s.fontSize = v;
+    if ((v = ALIGNEMENT[lire(o, "textAlignment")])) s.align = v;
+    if ((v = POSITION[lire(o, "textPosition")])) s.verticalAlign = v;
+    return serialiser(s);
+}
+
+function styleConnexion(c) {
+    var s = fusionner({}, "html=1;rounded=0;endArrow=none;startArrow=none;labelBackgroundColor=#FFFFFF");
+    var r = lire(c, "concept");
+    fusionner(s, RELATIONS[c.type]);
+    if (c.type === "access-relationship" && r) fusionner(s, SENS_ACCES[lire(r, "accessType")]);
+    if (c.type === "association-relationship" && r && lire(r, "associationDirected")) fusionner(s, "endArrow=open");
+    var v;
+    if ((v = lire(c, "lineColor"))) s.strokeColor = v;
+    if ((v = lire(c, "fontColor"))) s.fontColor = v;
+    return serialiser(s);
+}
+
+function cellule(id, label, meta, attrsCellule, geometrie) {
+    return '<UserObject id="' + xml(id) + '" label="' + label + '"' + meta + '>' +
+        '<mxCell ' + attrsCellule + '>' + geometrie + '</mxCell></UserObject>';
+}
+
+/** Exporte un objet et ses enfants. Les coordonnées Archi sont relatives au parent, comme dans draw.io. */
+function exporterNoeud(o, parentId, origine, sortie, absolus) {
+    var b = o.bounds;
+    var w = b.width > 0 ? b.width : TAILLE_DEFAUT.width;
+    var h = b.height > 0 ? b.height : TAILLE_DEFAUT.height;
+    var abs = { x: origine.x + b.x, y: origine.y + b.y, width: w, height: h };
+    absolus[o.id] = abs;
+
+    var enfants = $(o).children().filter(function (e) { return !estConnexion(e); });
+    var texte = o.type === "diagram-model-note" ? lire(o, "text") : lire(o, "name");
+
+    sortie.push(cellule(o.id, libelle(texte), metadonnees(o),
+        'style="' + xml(styleNoeud(o, enfants.size() > 0)) + '" vertex="1" parent="' + xml(parentId) + '"',
+        '<mxGeometry x="' + b.x + '" y="' + b.y + '" width="' + w + '" height="' + h + '" as="geometry"/>'));
+
+    enfants.each(function (e) { exporterNoeud(e, o.id, abs, sortie, absolus); });
+}
+
+/** Points de cassure Archi (décalages depuis le centre de la source) en coordonnées absolues. */
+function points(c, absolus) {
+    var src = absolus[c.source.id];
+    var bp = lire(c, "relativeBendpoints");
+    if (!src || !bp || bp.length === 0) return "";
+    var cx = src.x + src.width / 2, cy = src.y + src.height / 2, out = "";
+    for (var i = 0; i < bp.length; i++) {
+        out += '<mxPoint x="' + Math.round(cx + bp[i].startX) + '" y="' + Math.round(cy + bp[i].startY) + '"/>';
+    }
+    return '<Array as="points">' + out + '</Array>';
+}
+
+function exporterVue(vue) {
+    var sortie = [], absolus = {};
+    $(vue).children().filter(function (e) { return !estConnexion(e); }).each(function (o) {
+        exporterNoeud(o, "1", { x: 0, y: 0 }, sortie, absolus);
+    });
+    // Les connexions viennent après les nœuds : draw.io résout source et cible par id.
+    $(vue).find().filter(estConnexion).each(function (c) {
+        sortie.push(cellule(c.id, libelle(lire(c, "name")), metadonnees(c),
+            'style="' + xml(styleConnexion(c)) + '" edge="1" parent="1" source="' + xml(c.source.id) +
+            '" target="' + xml(c.target.id) + '"',
+            '<mxGeometry relative="1" as="geometry">' + points(c, absolus) + '</mxGeometry>'));
+    });
+    return '<diagram id="' + xml(vue.id) + '" name="' + xml(vue.name) + '">' +
+        '<mxGraphModel grid="1" gridSize="12" page="0"><root>' +
+        '<mxCell id="0"/><mxCell id="1" parent="0"/>' + sortie.join("") +
+        '</root></mxGraphModel></diagram>';
+}
+
+function vuesSelectionnees() {
+    var vues = [], vus = {};
+    $(selection).each(function (o) {
+        var v = o.type === "archimate-diagram-model" ? o : lire(o, "view");
+        if (v && v.type === "archimate-diagram-model" && !vus[v.id]) {
+            vus[v.id] = true;
+            vues.push(v);
+        }
+    });
+    return vues;
+}
+
+// ---------------------------------------------------------------------------
+
+exigerModele();
+console.clear();
+titre("Export draw.io");
+
+var vues = vuesSelectionnees();
+if (vues.length === 0) {
+    console.error("Aucune vue ArchiMate dans la sélection.");
+    exit();
+}
+
+var nomFichier = (vues.length === 1 ? vues[0].name : model.name).replace(/[\\\/:*?"<>|]/g, "_") + ".drawio";
+var chemin = window.promptSaveFile({
+    title: "Exporter vers draw.io",
+    filterExtensions: ["*.drawio"],
+    fileName: nomFichier
+});
+if (!chemin) exit();
+
+$.fs.writeFile(chemin, '<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="jArchi">' +
+    vues.map(exporterVue).join("") + '</mxfile>\n');
+
+vues.forEach(function (v) { console.log("Vue exportée : " + v.name); });
+console.log(vues.length + " page(s) écrite(s) dans " + chemin);
