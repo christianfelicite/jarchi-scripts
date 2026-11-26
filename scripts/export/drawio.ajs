@@ -4,8 +4,8 @@
  *              ou un objet dans une vue ouverte.
  * Effets     : aucun sur le modèle. Écrit un fichier .drawio, une page par vue.
  * Fidélité   : positions, tailles, imbrication, couleurs, libellés et
- *              propriétés sont conservés. Les formes sont des rectangles
- *              colorés par couche, pas les pictogrammes ArchiMate de draw.io.
+ *              propriétés sont conservés. Formes : pictogrammes de la palette
+ *              draw.io « ArchiMate 3.2 », couleurs Archi.
  *              Les points de cassure des connexions sont approximés.
  *              Les images sont ignorées.
  */
@@ -36,6 +36,24 @@ var COUCHES = [
     ["localisation", /^location$/]
 ];
 
+// Pictogrammes draw.io (palette « ArchiMate 3.2 ») :
+// shape=mxgraph.archimate3.application;appType=…;archiType=….
+// appType se déduit du suffixe du type jArchi, sauf exceptions ci-dessous.
+// Les autres types portent leur propre nom (node, goal, product…).
+var APPTYPE_SUFFIXE = {
+    actor: "actor", role: "role", collaboration: "collab", interface: "interface",
+    process: "proc", "function": "func", interaction: "interaction", event: "event", service: "serv"
+};
+var APPTYPE_EXCEPTIONS = {
+    "application-component": "comp", "business-object": "passive", "data-object": "passive",
+    "system-software": "sysSw", "communication-network": "netw", "distribution-network": "distribution",
+    "work-package": "workPackage", "value-stream": "valueStream", "course-of-action": "course",
+    "stakeholder": "role", "assessment": "assess", "value": "amValue"
+};
+// archiType : oct pour la motivation, rounded pour le comportement, square sinon.
+// Ces types n'en ont pas dans la palette draw.io : leur forme est propre.
+var SANS_ARCHITYPE = { device: 1, deliverable: 1, plateau: 1, gap: 1 };
+
 // Notation des relations ArchiMate en style draw.io.
 var RELATIONS = {
     "composition-relationship": "startArrow=diamondThin;startFill=1;startSize=12",
@@ -44,7 +62,7 @@ var RELATIONS = {
     "realization-relationship": "dashed=1;endArrow=block;endFill=0",
     "serving-relationship": "endArrow=open",
     "access-relationship": "dashed=1;dashPattern=1 4",
-    "influence-relationship": "dashed=1;endArrow=open",
+    "influence-relationship": "dashed=1;dashPattern=6 4;endArrow=open",
     "triggering-relationship": "endArrow=block;endFill=1",
     "flow-relationship": "dashed=1;dashPattern=6 4;endArrow=block;endFill=1",
     "specialization-relationship": "endArrow=block;endFill=0;endSize=12"
@@ -114,6 +132,16 @@ function couche(type) {
     return "autre";
 }
 
+function appType(type) {
+    return APPTYPE_EXCEPTIONS[type] || APPTYPE_SUFFIXE[type.split("-").pop()] || type;
+}
+
+function archiType(type) {
+    if (couche(type) === "motivation") return "oct";
+    return /(process|function|interaction|event|service|capability|value-stream|course-of-action|work-package)$/.test(type)
+        ? "rounded" : "square";
+}
+
 /** Type ArchiMate, documentation et propriétés, en attributs du UserObject. */
 function metadonnees(o) {
     var c = lire(o, "concept");
@@ -144,15 +172,15 @@ function styleNoeud(o, estConteneur) {
     } else if (t === "diagram-model-reference") {
         fusionner(s, "rounded=0;dashed=1;fillColor=#DCEBFF");
     } else if (t === "grouping") {
-        fusionner(s, "rounded=0;dashed=1;align=left;spacingLeft=4;fillColor=none");
+        fusionner(s, "shape=mxgraph.archimate3.application;appType=grouping;archiType=square;" +
+            "outlineConnect=0;dashed=1;align=left;spacingLeft=4;fillColor=none");
     } else if (t === "junction") {
         var ou = lire(lire(o, "concept") || {}, "junctionType") === "or";
         fusionner(s, "ellipse;aspect=fixed;fillColor=" + (ou ? "#FFFFFF" : "#000000"));
     } else {
-        // Comportement : coins arrondis. Service : forme de pilule.
-        var comportement = /(process|function|interaction|event|service)$/.test(t);
-        fusionner(s, "rounded=" + (comportement ? 1 : 0) + ";fillColor=" + COULEURS[couche(t)]);
-        if (/service$/.test(t)) fusionner(s, "arcSize=50");
+        fusionner(s, "shape=mxgraph.archimate3.application;outlineConnect=0;appType=" + appType(t) +
+            ";fillColor=" + COULEURS[couche(t)]);
+        if (!SANS_ARCHITYPE[t]) s.archiType = archiType(t);
     }
 
     if (estConteneur) fusionner(s, "container=1;collapsible=0");
@@ -173,7 +201,7 @@ function styleConnexion(c) {
     var r = lire(c, "concept");
     fusionner(s, RELATIONS[c.type]);
     if (c.type === "access-relationship" && r) fusionner(s, SENS_ACCES[lire(r, "accessType")]);
-    if (c.type === "association-relationship" && r && lire(r, "associationDirected")) fusionner(s, "endArrow=open");
+    if (c.type === "association-relationship" && r && lire(r, "associationDirected")) fusionner(s, "endArrow=openAsync");
     var v;
     if ((v = lire(c, "lineColor"))) s.strokeColor = v;
     if ((v = lire(c, "fontColor"))) s.fontColor = v;
