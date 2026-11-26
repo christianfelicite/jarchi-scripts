@@ -6,8 +6,16 @@
  * Fidélité   : positions, tailles, imbrication, couleurs, libellés et
  *              propriétés sont conservés. Formes : pictogrammes de la palette
  *              draw.io « ArchiMate 3.2 », couleurs Archi.
- *              Les points de cassure des connexions sont approximés.
- *              Les images sont ignorées.
+ *              Points de cassure : formule d'Archi (pondération source/cible).
+ *              Images : objets image et images des éléments, notes et
+ *              groupes (personnalisées ou de spécialisation), intégrées au
+ *              fichier. Comme dans Archi, une image masque le pictogramme
+ *              sauf si l'icône est forcée.
+ * Écarts     : draw.io ne rogne pas une image plus grande que sa forme :
+ *              elle est réduite pour y tenir. Le remplissage « Fill » d'Archi
+ *              (recadrage) devient un ajustement sans recadrage.
+ *              Extrémité sur une relation : point de référence pris au milieu
+ *              de cette relation, sans ses propres points de cassure.
  */
 load(__DIR__ + "../lib/commun.js");
 
@@ -78,6 +86,17 @@ var SENS_ACCES = {
 // Codes Archi : textAlignment 1/2/4, textPosition 0/1/2.
 var ALIGNEMENT = { 1: "left", 2: "center", 4: "right" };
 var POSITION = { 0: "top", 1: "middle", 2: "bottom" };
+
+// Codes Archi des images.
+var SOURCE_IMAGE_SPECIALISATION = 0;   // imageSource : 0 spécialisation, 1 personnalisée
+var POSITION_IMAGE_REMPLIR = 9;        // imagePosition : 0..8 grille 3×3 ligne par ligne, 9 remplir
+var ICONE_TOUJOURS = 1;                // showIcon : 0 si pas d'image, 1 toujours, 2 jamais
+var ICONE_JAMAIS = 2;
+
+// Les octets des images ne sont pas exposés par jArchi : lecture par l'archive Archi.
+var Base64 = Java.type("java.util.Base64");
+var IEditorModelManager = Java.type("com.archimatetool.editor.model.IEditorModelManager");
+var IArchiveManager = Java.type("com.archimatetool.editor.model.IArchiveManager");
 
 // ---------------------------------------------------------------------------
 
@@ -151,11 +170,111 @@ function metadonnees(o) {
     return attrs;
 }
 
-function styleNoeud(o, estConteneur) {
+// ---------------------------------------------------------------------------
+// Images
+
+var archive = null;          // IArchiveManager du modèle, initialisé au lancement
+var imagesEncodees = {};     // chemin dans l'archive → URI data, une seule lecture par image
+
+function archiveDuModele() {
+    try {
+        var modeles = IEditorModelManager.INSTANCE.getModels();
+        for (var i = 0; i < modeles.size(); i++) {
+            var m = modeles.get(i);
+            if (String(m.getId()) === String(model.id)) return m.getAdapter(IArchiveManager.class);
+        }
+    } catch (e) {
+        console.log("Archive du modèle inaccessible, images ignorées : " + e);
+    }
+    return null;
+}
+
+/** Valeur d'un objet image jArchi (Map Java) : accès par membre ou par get(). */
+function champ(m, cle) {
+    var v = lire(m, cle);
+    if (v === undefined) {
+        try { v = m.get(cle); } catch (e) { v = undefined; }
+    }
+    return v === null ? undefined : v;
+}
+
+function typeMime(octets) {
+    var a = octets[0] & 0xFF, b = octets[1] & 0xFF;
+    if (a === 0x89 && b === 0x50) return "image/png";
+    if (a === 0xFF && b === 0xD8) return "image/jpeg";
+    if (a === 0x47 && b === 0x49) return "image/gif";
+    if (a === 0x42 && b === 0x4D) return "image/bmp";
+    if (a === 0x3C) return "image/svg+xml";
+    return "image/png";
+}
+
+/** URI data au format draw.io (« data:type,base64 », sans « ;base64 » : « ; » sépare les styles). */
+function uriImage(chemin) {
+    if (!chemin || !archive) return null;
+    if (imagesEncodees.hasOwnProperty(chemin)) return imagesEncodees[chemin];
+    var uri = null;
+    try {
+        var octets = archive.getBytesFromEntry(chemin);
+        if (octets && octets.length > 1) {
+            uri = "data:" + typeMime(octets) + "," + Base64.getEncoder().encodeToString(octets);
+        }
+    } catch (e) {
+        console.log("Image illisible (" + chemin + ") : " + e);
+    }
+    imagesEncodees[chemin] = uri;
+    return uri;
+}
+
+/** Image affichée par Archi pour cet objet : personnalisée, ou celle de la spécialisation. */
+function imageDe(o) {
+    var img;
+    if (lire(o, "imageSource") === SOURCE_IMAGE_SPECIALISATION) {
+        var c = lire(o, "concept");
+        var spe = c && lire(c, "specialization");
+        var profil = spe ? model.findSpecialization(spe, c.type) : null;
+        img = profil ? lire(profil, "image") : undefined;
+    } else {
+        img = lire(o, "image");
+    }
+    if (!img) return null;
+    var uri = uriImage(champ(img, "path"));
+    if (!uri) return null;
+    return { uri: uri, width: Number(champ(img, "width")) || 0, height: Number(champ(img, "height")) || 0 };
+}
+
+/**
+ * Cellule image enfant de la forme, placée comme dans Archi (taille naturelle,
+ * grille 3×3). Réduite si elle dépasse la forme : draw.io ne la rognerait pas.
+ */
+function celluleImage(o, img, w, h) {
+    var x = 0, y = 0, iw = w, ih = h;
+    var pos = lire(o, "imagePosition");
+    if (pos === undefined) pos = 2;   // haut droite, défaut d'Archi
+    if (pos !== POSITION_IMAGE_REMPLIR && img.width > 0 && img.height > 0) {
+        var r = Math.min(1, w / img.width, h / img.height);
+        iw = Math.round(img.width * r);
+        ih = Math.round(img.height * r);
+        var col = pos % 3, ligne = Math.floor(pos / 3);
+        x = col === 0 ? 0 : col === 1 ? Math.round((w - iw) / 2) : w - iw;
+        y = ligne === 0 ? 0 : ligne === 1 ? Math.round((h - ih) / 2) : h - ih;
+    }
+    return '<mxCell id="' + xml(o.id + "-image") + '" value="" style="' +
+        xml("shape=image;imageAspect=1;connectable=0;image=" + img.uri + ";") +
+        '" vertex="1" parent="' + xml(o.id) + '">' +
+        '<mxGeometry x="' + x + '" y="' + y + '" width="' + iw + '" height="' + ih + '" as="geometry"/></mxCell>';
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+
+function styleNoeud(o, estConteneur, image) {
     var t = o.type;
     var s = fusionner({}, "whiteSpace=wrap;html=1;verticalAlign=top;align=center");
 
-    if (t === "diagram-model-note") {
+    if (t === "diagram-model-image") {
+        // Objet image d'Archi : l'image occupe tout le cadre.
+        fusionner(s, image ? "shape=image;imageAspect=0;image=" + image.uri : "dashed=1;fillColor=none");
+    } else if (t === "diagram-model-note") {
         fusionner(s, "shape=note;size=12;align=left;spacingLeft=4;fillColor=#FFFFFF");
     } else if (t === "diagram-model-group") {
         fusionner(s, "rounded=0;align=left;spacingLeft=4;fontStyle=1;fillColor=#D2D7D7");
@@ -171,6 +290,10 @@ function styleNoeud(o, estConteneur) {
         fusionner(s, "shape=mxgraph.archimate3.application;outlineConnect=0;appType=" + appType(t) +
             ";fillColor=" + COULEURS[couche(t)]);
         if (!SANS_ARCHITYPE[t]) s.archiType = archiType(t);
+        // Règle d'Archi : l'image remplace l'icône, sauf icône forcée.
+        // appType=generic : cadre conservé, sans pictogramme.
+        var icone = lire(o, "showIcon");
+        if (icone === ICONE_JAMAIS || (image && icone !== ICONE_TOUJOURS)) s.appType = "generic";
     }
 
     if (estConteneur) fusionner(s, "container=1;collapsible=0");
@@ -206,29 +329,53 @@ function cellule(id, label, meta, attrsCellule, geometrie) {
 /** Exporte un objet et ses enfants. Les coordonnées Archi sont relatives au parent, comme dans draw.io. */
 function exporterNoeud(o, parentId, origine, sortie, absolus) {
     var b = o.bounds;
-    var w = b.width > 0 ? b.width : TAILLE_DEFAUT.width;
-    var h = b.height > 0 ? b.height : TAILLE_DEFAUT.height;
+    var image = imageDe(o);
+    var estImage = o.type === "diagram-model-image";
+    // -1 : taille par défaut d'Archi. Pour un objet image, c'est la taille de l'image.
+    var w = b.width > 0 ? b.width : (estImage && image && image.width) || TAILLE_DEFAUT.width;
+    var h = b.height > 0 ? b.height : (estImage && image && image.height) || TAILLE_DEFAUT.height;
     var abs = { x: origine.x + b.x, y: origine.y + b.y, width: w, height: h };
     absolus[o.id] = abs;
 
     var enfants = $(o).children().filter(function (e) { return !estConnexion(e); });
-    var texte = o.type === "diagram-model-note" ? lire(o, "text") : lire(o, "name");
+    var texte = o.type === "diagram-model-note" ? lire(o, "text") : estImage ? "" : lire(o, "name");
 
     sortie.push(cellule(o.id, libelle(texte), metadonnees(o),
-        'style="' + xml(styleNoeud(o, enfants.size() > 0)) + '" vertex="1" parent="' + xml(parentId) + '"',
+        'style="' + xml(styleNoeud(o, enfants.size() > 0, image)) + '" vertex="1" parent="' + xml(parentId) + '"',
         '<mxGeometry x="' + b.x + '" y="' + b.y + '" width="' + w + '" height="' + h + '" as="geometry"/>'));
+
+    if (image && !estImage) sortie.push(celluleImage(o, image, w, h));
 
     enfants.each(function (e) { exporterNoeud(e, o.id, abs, sortie, absolus); });
 }
 
-/** Points de cassure Archi (décalages depuis le centre de la source) en coordonnées absolues. */
+/**
+ * Point de référence d'une extrémité, comme l'ancre d'Archi : centre d'une
+ * forme ; milieu d'une relation quand l'extrémité est une relation.
+ */
+function reference(o, absolus, profondeur) {
+    var a = absolus[o.id];
+    if (a) return { x: a.x + a.width / 2, y: a.y + a.height / 2 };
+    if (profondeur > 10 || !estConnexion(o)) return null;
+    var p = reference(o.source, absolus, profondeur + 1), q = reference(o.target, absolus, profondeur + 1);
+    return p && q ? { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 } : null;
+}
+
+/**
+ * Points de cassure en coordonnées absolues, formule d'Archi (GEF RelativeBendpoint) :
+ * point i = (1 − w)·(réf. source + début) + w·(réf. cible + fin), avec w = (i + 1) / (n + 1).
+ */
 function points(c, absolus) {
-    var src = absolus[c.source.id];
     var bp = lire(c, "relativeBendpoints");
-    if (!src || !bp || bp.length === 0) return "";
-    var cx = src.x + src.width / 2, cy = src.y + src.height / 2, out = "";
-    for (var i = 0; i < bp.length; i++) {
-        out += '<mxPoint x="' + Math.round(cx + bp[i].startX) + '" y="' + Math.round(cy + bp[i].startY) + '"/>';
+    if (!bp || bp.length === 0) return "";
+    var a1 = reference(c.source, absolus, 0), a2 = reference(c.target, absolus, 0);
+    if (!a1 || !a2) return "";
+    var n = bp.length, out = "";
+    for (var i = 0; i < n; i++) {
+        var w = (i + 1) / (n + 1);
+        var x = (1 - w) * (a1.x + bp[i].startX) + w * (a2.x + bp[i].endX);
+        var y = (1 - w) * (a1.y + bp[i].startY) + w * (a2.y + bp[i].endY);
+        out += '<mxPoint x="' + Math.round(x) + '" y="' + Math.round(y) + '"/>';
     }
     return '<Array as="points">' + out + '</Array>';
 }
@@ -262,6 +409,8 @@ if (vues.length === 0) {
     console.error("Aucune vue ArchiMate dans la sélection.");
     exit();
 }
+
+archive = archiveDuModele();
 
 var nomFichier = nomDeFichier(vues.length === 1 ? vues[0].name : model.name, "drawio");
 var chemin = window.promptSaveFile({
