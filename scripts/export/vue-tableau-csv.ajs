@@ -6,9 +6,9 @@
  * Effets     : aucun sur le modèle. Écrit un fichier .csv à la demande.
  * Tableaux   : un onglet « Éléments », un onglet « Relations ». Une ligne par
  *              concept, même s'il figure plusieurs fois.
- *              Colonnes communes : nom, type, spécialisation, documentation,
- *              une colonne par clé de propriété rencontrée, vues (si plusieurs),
- *              identifiant. Une clé répétée sur un concept : valeurs
+ *              Colonnes communes : identifiant du concept, nom, type,
+ *              spécialisation, documentation, une colonne par clé de propriété
+ *              rencontrée, vues (si plusieurs). Une clé répétée sur un concept : valeurs
  *              concaténées, séparées par « | ».
  *              Relations : source et cible en plus, avec leur type.
  *              Clic sur un en-tête : tri. Champ « Filtrer » : recherche sur
@@ -119,14 +119,13 @@ var DEBUT_RELATIONS = [
     colonne("Cible", "cible"), colonne("Type cible", "typeCible")
 ];
 
-/** Colonnes : début propre au genre, puis colonnes communes. */
+/** Colonnes : identifiant, début propre au genre, puis colonnes communes. */
 function colonnes(debut, cles, plusieursVues) {
-    var cols = debut.concat([colonne("Spécialisation", "specialisation"), colonne("Documentation", "documentation")]);
+    var cols = [colonne("Identifiant", "id")].concat(debut, [colonne("Spécialisation", "specialisation"), colonne("Documentation", "documentation")]);
     cles.forEach(function (cle) {
         cols.push({ titre: cle, valeur: function (l) { return texte(l.proprietes[cle]); } });
     });
     if (plusieursVues) cols.push({ titre: "Vues", valeur: function (l) { return l.vues.join(", "); } });
-    cols.push(colonne("Identifiant", "id"));
     return cols;
 }
 
