@@ -29,8 +29,9 @@
  *              signalé dans la console.
  * Limite     : si jArchi ne fournit pas le chemin du fichier du modèle, le
  *              script le demande. Le modèle exporté s'appelle « <source>
- *              (export) ». Si jArchi ouvre la copie de travail dans Archi sans
- *              savoir la refermer, l'alerte finale le signale : la fermer sans
+ *              (export) ». La copie de travail, ouverte par le chargement, est
+ *              refermée via le gestionnaire de modèles d'Archi (API interne).
+ *              En cas d'échec, l'alerte finale demande de la fermer sans
  *              l'enregistrer. Les dossiers vidés restent dans l'export.
  */
 load(__DIR__ + "../lib/commun.js");
@@ -95,6 +96,28 @@ const KEEP_HIDDEN_RELATIONS = window.confirm(
   "Annuler : non, uniquement les relations visibles ou marquées."
 );
 console.log("Relations non dessinées : " + (KEEP_HIDDEN_RELATIONS ? "gardées" : "écartées"));
+
+// Referme la copie de travail si Archi l'a ouverte. jArchi n'offre pas de
+// fermeture : on passe par le gestionnaire de modèles d'Archi, en retrouvant
+// le modèle ouvert par son fichier. Retourne l'état constaté.
+function fermerCopie(fichier, mdl) {
+  try {
+    const mgr = Java.type("com.archimatetool.editor.model.IEditorModelManager").INSTANCE;
+    const cible = fichier.toRealPath();
+    let trouvee = false;
+    for (const em of Java.from(mgr.getModels())) {
+      const f = em.getFile();
+      if (f && f.exists() && f.toPath().toRealPath().equals(cible)) {
+        trouvee = true;
+        if (mgr.closeModel(em)) return "refermée";
+      }
+    }
+    if (!trouvee) return "non ouverte";
+  } catch (e) {
+    console.log("Fermeture par le gestionnaire d'Archi impossible : " + e);
+  }
+  try { mdl.close(); return "refermée"; } catch (e) { return "non refermée"; }
+}
 
 // 2. Copie de travail dans un fichier temporaire. Le fichier d'export n'est
 // écrit qu'à la fin, une fois le périmètre validé.
@@ -216,10 +239,10 @@ try {
   // 6. Enregistrement : la copie de travail devient le fichier d'export.
   m.name = model.name + " (export)";
   m.save();
-  // Le chargement peut ouvrir la copie dans Archi : on la referme avant de
-  // déplacer son fichier. Selon la version de jArchi, close() peut manquer.
-  let fermee = false;
-  try { m.close(); fermee = true; } catch (e) { /* méthode absente */ }
+  // Le chargement ouvre la copie dans Archi : on la referme avant de déplacer
+  // son fichier, sinon elle resterait ouverte sur un fichier disparu.
+  const fermeture = fermerCopie(tmp, m);
+  console.log("Copie de travail : " + fermeture + ".");
   Files.move(tmp, dst, REPLACE);
   console.log("");
   console.log("Export prêt : " + dst + " (" + keepViews.size + " vues, " + keep.size +
@@ -229,7 +252,7 @@ try {
     console.log(forces.length + " objet(s) exclu(s) mais gardé(s) :");
     forces.forEach(f => console.log("  " + f));
   }
-  window.alert("Export créé :\n" + dst + (fermee ? "" :
+  window.alert("Export créé :\n" + dst + (fermeture !== "non refermée" ? "" :
     "\n\nArchi a ouvert la copie de travail « " + m.name + " ». " +
     "Ferme-la sans l'enregistrer : l'export est déjà créé."));
 } finally {
