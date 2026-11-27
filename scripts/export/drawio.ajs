@@ -13,29 +13,6 @@ load(__DIR__ + "../lib/commun.js");
 
 var TAILLE_DEFAUT = { width: 120, height: 55 };
 
-// Couleurs par défaut d'Archi, par couche.
-var COULEURS = {
-    strategie: "#F5DEAA",
-    metier: "#FFFFB5",
-    application: "#B5FFFF",
-    technologie: "#C9E7B7",
-    motivation: "#CCCCFF",
-    implementation: "#FFE0E0",
-    localisation: "#FBB875",
-    autre: "#FFFFFF"
-};
-
-// Une règle par couche plutôt qu'une table par type.
-var COUCHES = [
-    ["metier", /^(business-.*|contract|representation|product)$/],
-    ["application", /^(application-.*|data-object)$/],
-    ["technologie", /^(technology-.*|node|device|system-software|communication-network|path|artifact|equipment|facility|distribution-network|material)$/],
-    ["motivation", /^(stakeholder|driver|assessment|goal|outcome|principle|requirement|constraint|meaning|value)$/],
-    ["strategie", /^(resource|capability|value-stream|course-of-action)$/],
-    ["implementation", /^(work-package|deliverable|implementation-event|plateau|gap)$/],
-    ["localisation", /^location$/]
-];
-
 // Pictogrammes draw.io (palette « ArchiMate 3.2 ») :
 // shape=mxgraph.archimate3.application;appType=…;archiType=….
 // appType se déduit du suffixe du type jArchi, sauf exceptions ci-dessous.
@@ -113,13 +90,6 @@ function serialiser(style) {
 
 function estConnexion(o) {
     return /-relationship$/.test(o.type) || o.type === "diagram-model-connection";
-}
-
-function couche(type) {
-    for (var i = 0; i < COUCHES.length; i++) {
-        if (COUCHES[i][1].test(type)) return COUCHES[i][0];
-    }
-    return "autre";
 }
 
 function appType(type) {
