@@ -4,9 +4,8 @@
  *              natif d'Archi (Fichier › Importer › Modèle dans le modèle
  *              sélectionné). Les identifiants sont conservés : un nouvel
  *              import met à jour les objets au lieu de les dupliquer.
- * Prérequis  : objets à exporter marqués par la propriété PROP_EXPORT.
- *              Modèle source enregistré : le script lit le fichier sur disque,
- *              pas le modèle en mémoire.
+ * Prérequis  : modèle source sélectionné, déjà enregistré dans un fichier.
+ *              Objets à exporter marqués par la propriété PROP_EXPORT.
  * Marquage   : valeurs reconnues VALEUR_EXPORT et VALEUR_EXCLUSION, casse et
  *              espaces ignorés. Toute autre valeur, ou l'absence de la
  *              propriété, reprend la décision du dossier parent, puis de ses
@@ -16,7 +15,9 @@
  *                sous-dossiers compris, sauf marquage propre contraire.
  *              - Élément marqué : exporté seul, sans ses voisins.
  *              - Relation marquée : exportée avec sa source et sa cible.
- * Effets     : aucun sur le modèle source. Élague une copie de travail
+ * Effets     : enregistre le modèle source, après confirmation, pour que
+ *              l'export reflète son état courant. Ne le modifie pas.
+ *              Élague une copie de travail
  *              temporaire, puis l'enregistre comme fichier d'export : ne
  *              restent que les objets exportés. Aucun fichier d'export n'est
  *              créé si rien n'est marqué ou si le script échoue.
@@ -26,10 +27,11 @@
  *              exportée ou s'il est l'extrémité d'une relation exportée, faute
  *              de quoi la vue ou la relation serait cassée. Chaque cas est
  *              signalé dans la console.
- * Limite     : si Archi refuse d'ouvrir la copie, fermer le modèle source.
- *              Les deux partagent le même identifiant de modèle. Les dossiers
- *              vidés restent dans la copie.
+ * Limite     : si jArchi ne fournit pas le chemin du fichier du modèle, le
+ *              script le demande. Les dossiers vidés restent dans l'export.
  */
+load(__DIR__ + "../lib/commun.js");
+
 const PROP_EXPORT = "export";
 const VALEUR_EXPORT = "oui";
 const VALEUR_EXCLUSION = "non";
@@ -38,23 +40,44 @@ const Files   = Java.type("java.nio.file.Files");
 const Paths   = Java.type("java.nio.file.Paths");
 const REPLACE = Java.type("java.nio.file.StandardCopyOption").REPLACE_EXISTING;
 
-// 1. Choix des fichiers et de l'option.
-// Chaque fenêtre de fichier est annoncée : sur macOS, leur titre n'est pas
-// affiché et les deux fenêtres se ressemblent.
+// 1. Source : le modèle sélectionné, enregistré pour que le fichier sur disque
+// reflète son état courant. Chaque fenêtre de fichier est annoncée : sur
+// macOS, leur titre n'est pas affiché.
+exigerModele();
 console.clear();
 console.log("== Export partiel ==");
 
-window.alert("Étape 1/3 : choisis le fichier du modèle SOURCE (.archimate existant).");
-const srcPath = window.promptOpenFile({ title: "Modèle source", filterExtensions: ["*.archimate"] });
-if (!srcPath) { console.log("Annulé : aucun modèle source choisi."); exit(); }
-const src = Paths.get(String(srcPath)).toAbsolutePath();
-if (!Files.isRegularFile(src)) {
-  window.alert("Modèle source introuvable :\n" + src + "\n\nChoisis un fichier .archimate existant.");
+if (!window.confirm("Exporter depuis le modèle « " + model.name + " » ?\n\n" +
+                    "Le modèle va être enregistré : l'export part de son fichier.")) {
+  console.log("Annulé.");
   exit();
 }
-console.log("Source  : " + src);
+model.save();
 
-window.alert("Étape 2/3 : choisis le dossier et le nom du fichier d'EXPORT à créer.");
+// jArchi n'expose pas forcément le fichier du modèle : lecture tentée, sinon null.
+function cheminDuModele(mdl) {
+  for (const nom of ["file", "path"]) {
+    const v = lire(mdl, nom);
+    if (v) return String(v);
+  }
+  return null;
+}
+
+let srcPath = cheminDuModele(model);
+if (!srcPath) {
+  console.log("Fichier du modèle non fourni par jArchi : choix manuel.");
+  window.alert("Choisis le fichier .archimate du modèle « " + model.name + " ».");
+  srcPath = window.promptOpenFile({ title: "Fichier du modèle " + model.name, filterExtensions: ["*.archimate"] });
+  if (!srcPath) { console.log("Annulé : aucun fichier source choisi."); exit(); }
+}
+const src = Paths.get(String(srcPath)).toAbsolutePath();
+if (!Files.isRegularFile(src)) {
+  window.alert("Fichier du modèle introuvable :\n" + src);
+  exit();
+}
+console.log("Source  : " + model.name + " (" + src + ")");
+
+window.alert("Étape 1/2 : choisis le dossier et le nom du fichier d'EXPORT à créer.");
 let dstPath = window.promptSaveFile({ title: "Fichier d'export", filterExtensions: ["*.archimate"], fileName: "export.archimate" });
 if (!dstPath) { console.log("Annulé : aucun fichier d'export choisi."); exit(); }
 dstPath = String(dstPath);
@@ -64,7 +87,7 @@ if (src.equals(dst)) { window.alert("Le fichier d'export doit être différent d
 console.log("Export  : " + dst);
 
 const KEEP_HIDDEN_RELATIONS = window.confirm(
-  "Étape 3/3 : garder aussi les relations non dessinées entre éléments exportés ?\n\n" +
+  "Étape 2/2 : garder aussi les relations non dessinées entre éléments exportés ?\n\n" +
   "OK : oui, toutes les relations entre éléments conservés, sauf celles exclues.\n" +
   "Annuler : non, uniquement les relations visibles ou marquées."
 );
