@@ -1,32 +1,43 @@
 /*
  * Objectif   : distinguer les objets superposés d'une même couche ArchiMate en
- *              éclaircissant leur couleur selon leur niveau d'imbrication.
+ *              éclaircissant leur couleur selon leur rang d'imbrication.
  * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
  *              ou un objet dans une vue ouverte.
  * Effets     : MODIFIE LES VUES SÉLECTIONNÉES, après confirmation. Change la
- *              couleur de remplissage des objets de niveau 1 et plus. Les
- *              objets de niveau 0 ne sont jamais modifiés.
- * Règles     : - Niveau : 0 si le parent graphique de l'objet n'est pas un
- *                élément de la même couche ; sinon niveau du parent + 1.
- *                Un groupe, une note ou un élément d'une autre couche
- *                interrompt donc la chaîne.
- *              - Couleur de base : celle de l'objet de niveau 0 de la chaîne,
- *                c'est-à-dire sa couleur de remplissage si elle est définie,
- *                sinon la couleur par défaut de sa couche (COULEURS, lib).
- *              - Niveau n : la couleur de base est mélangée au blanc dans la
- *                proportion min(BLANC_MAX, n × PAS), sur chaque composante
- *                rouge, verte et bleue. La couleur garde sa teinte et
- *                s'éclaircit jusqu'à presque blanc, sans jamais l'atteindre.
- *              Même base et même niveau donnent toujours la même couleur.
- *              Relancer le script ne change rien.
+ *              couleur de remplissage des objets de rang 1 et plus. Un objet
+ *              de rang 0 n'est modifié que s'il porte une teinte produite par
+ *              ce script : il retrouve alors la couleur de sa couche. C'est ce
+ *              qui permet de changer de sens.
+ * Chaîne     : un objet est lié à son parent graphique si ce parent est un
+ *              élément de la même couche. Un groupe, une note ou un élément
+ *              d'une autre couche interrompt la chaîne.
+ * Sens       : choisi au lancement.
+ *              - Intérieur clair : rang = niveau, compté depuis l'extérieur.
+ *                0 pour un objet sans parent lié, sinon niveau du parent + 1.
+ *                Le conteneur garde la couleur de la couche, les objets
+ *                imbriqués s'éclaircissent. Couleur de base : celle de l'objet
+ *                de niveau 0 de la chaîne : sa couleur de remplissage si elle est
+ *                définie et n'est pas une teinte du script, sinon la couleur
+ *                par défaut de sa couche.
+ *              - Extérieur clair : rang = hauteur, comptée depuis l'intérieur.
+ *                0 pour un objet sans enfant lié, sinon 1 + la plus grande
+ *                hauteur de ses enfants liés. L'objet le plus imbriqué garde la
+ *                couleur de la couche, les conteneurs s'éclaircissent. Couleur
+ *                de base : la couleur par défaut de la couche. Une couleur
+ *                personnalisée sur un conteneur est donc remplacée.
+ * Couleur    : au rang n, la couleur de base est mélangée au blanc dans la
+ *              proportion min(BLANC_MAX, n × PAS), sur chaque composante
+ *              rouge, verte et bleue. Même base et même rang donnent toujours
+ *              la même couleur. Relancer le script dans le même sens ne
+ *              change rien ; le relancer dans l'autre sens remplace le
+ *              dégradé précédent.
  * Limite     : les couches « autre » (regroupement, jonction) ne sont pas
  *              traitées. Si les couleurs par défaut ont été changées dans les
- *              préférences d'Archi, définir la couleur des objets de niveau 0
- *              ou ajuster COULEURS dans lib/commun.js.
+ *              préférences d'Archi, ajuster COULEURS dans lib/commun.js.
  */
 load(__DIR__ + "../lib/commun.js");
 
-var PAS = 0.20;        // part de blanc ajoutée par niveau
+var PAS = 0.20;        // part de blanc ajoutée par rang
 var BLANC_MAX = 0.85;  // plafond : la couleur ne devient jamais tout à fait blanche
 
 function normaliser(c) {
@@ -34,11 +45,11 @@ function normaliser(c) {
 }
 
 /**
- * Couleur du niveau n : chaque canal RVB de la base est rapproché de 255 dans
+ * Couleur du rang n : chaque canal RVB de la base est rapproché de 255 dans
  * la proportion min(BLANC_MAX, n × PAS). La couleur garde sa teinte et
  * s'éclaircit.
  */
-function couleurNiveau(base, n) {
+function couleurRang(base, n) {
     var f = Math.min(BLANC_MAX, n * PAS);
     return "#" + [1, 3, 5].map(function (i) {
         var c = parseInt(base.substr(i, 2), 16);
@@ -47,7 +58,22 @@ function couleurNiveau(base, n) {
     }).join("");
 }
 
-// 1. Plan : niveau et couleur cible de chaque objet, sans rien modifier.
+/** Vrai si la couleur est une teinte que ce script produit pour la couche k. */
+function estTeinte(couleur, k) {
+    var defaut = normaliser(COULEURS[k]);
+    for (var r = 1; r * PAS < BLANC_MAX + PAS; r++) {
+        if (couleur === couleurRang(defaut, r)) return true;
+    }
+    return false;
+}
+
+/** Couleur de base d'un objet de niveau 0, pour le sens « intérieur clair ». */
+function baseRacine(o, k) {
+    var f = normaliser(lire(o, "fillColor"));
+    return f && !estTeinte(f, k) ? f : normaliser(COULEURS[k]);
+}
+
+// 1. Sélection et sens du dégradé.
 var vues = vuesSelectionnees();
 if (vues.length === 0) {
     console.error("Aucune vue sélectionnée. Sélectionner une vue dans l'arbre, ou un objet dans une vue.");
@@ -56,32 +82,67 @@ if (vues.length === 0) {
 console.clear();
 titre("Dégradé des superpositions");
 
-var plan = [], parNiveau = {};
+var EXTERIEUR_CLAIR = window.confirm(
+    "Sens du dégradé ?\n\n" +
+    "OK : extérieur clair. L'objet le plus imbriqué garde la couleur de la couche, " +
+    "les conteneurs s'éclaircissent.\n\n" +
+    "Annuler : intérieur clair. Le conteneur garde la couleur de la couche, " +
+    "les objets imbriqués s'éclaircissent."
+);
+console.log("Sens : " + (EXTERIEUR_CLAIR ? "extérieur clair (rang = hauteur)" : "intérieur clair (rang = niveau)"));
+
+// 2. Inventaire des objets en couche, dans l'ordre du parcours : un parent est
+// toujours inscrit avant ses descendants.
+var noeuds = [];
 
 function parcourir(parent, chaine) {
     $(parent).children().each(function (o) {
         var c = lire(o, "concept");
-        var suite = null;
+        var noeud = null;
         if (c && !/-relationship$/.test(c.type) && couche(c.type) !== "autre") {
             var k = couche(c.type);
-            if (chaine && chaine.couche === k) {
-                suite = { couche: k, niveau: chaine.niveau + 1, base: chaine.base };
-            } else {
-                suite = { couche: k, niveau: 0, base: normaliser(lire(o, "fillColor")) || normaliser(COULEURS[k]) };
-            }
-            parNiveau[suite.niveau] = (parNiveau[suite.niveau] || 0) + 1;
-            if (suite.niveau > 0) {
-                var cible = couleurNiveau(suite.base, suite.niveau);
-                if (normaliser(lire(o, "fillColor")) !== cible) plan.push([o, cible]);
-            }
+            var lie = chaine && chaine.couche === k ? chaine : null;
+            noeud = {
+                o: o,
+                couche: k,
+                parent: lie,
+                niveau: lie ? lie.niveau + 1 : 0,
+                hauteur: 0,
+                base: lie ? lie.base : baseRacine(o, k)
+            };
+            noeuds.push(noeud);
         }
-        parcourir(o, suite);
+        parcourir(o, noeud);
     });
 }
 vues.forEach(function (v) { parcourir(v, null); });
 
-Object.keys(parNiveau).sort().forEach(function (n) {
-    console.log("Niveau " + n + " : " + parNiveau[n] + " objet(s)");
+// Hauteur : en ordre inverse, chaque descendant est traité avant ses ancêtres.
+for (var i = noeuds.length - 1; i >= 0; i--) {
+    var n = noeuds[i];
+    if (n.parent) n.parent.hauteur = Math.max(n.parent.hauteur, n.hauteur + 1);
+}
+
+// 3. Plan : couleur cible de chaque objet, sans rien modifier. Rang 0 :
+// seule une teinte du script est remplacée par la couleur de la couche.
+var plan = [], parRang = {};
+noeuds.forEach(function (n) {
+    var rang = EXTERIEUR_CLAIR ? n.hauteur : n.niveau;
+    parRang[rang] = (parRang[rang] || 0) + 1;
+    var actuelle = normaliser(lire(n.o, "fillColor"));
+    var cible;
+    if (rang === 0) {
+        if (!actuelle || !estTeinte(actuelle, n.couche)) return;
+        cible = normaliser(COULEURS[n.couche]);
+    } else {
+        var base = EXTERIEUR_CLAIR ? normaliser(COULEURS[n.couche]) : n.base;
+        cible = couleurRang(base, rang);
+    }
+    if (actuelle !== cible) plan.push([n.o, cible]);
+});
+
+Object.keys(parRang).sort(function (a, b) { return a - b; }).forEach(function (r) {
+    console.log("Rang " + r + " : " + parRang[r] + " objet(s)");
 });
 
 if (plan.length === 0) {
@@ -89,7 +150,7 @@ if (plan.length === 0) {
     exit();
 }
 
-// 2. Application, après confirmation.
+// 4. Application, après confirmation.
 if (!window.confirm(plan.length + " objet(s) à recolorer dans " + vues.length + " vue(s). Appliquer ?")) {
     console.log("Annulé. Aucune modification.");
     exit();
