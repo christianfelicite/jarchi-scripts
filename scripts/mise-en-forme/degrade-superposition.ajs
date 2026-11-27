@@ -1,0 +1,95 @@
+/*
+ * Objectif   : distinguer les objets superposés d'une même couche ArchiMate en
+ *              assombrissant leur couleur selon leur niveau d'imbrication.
+ * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
+ *              ou un objet dans une vue ouverte.
+ * Effets     : MODIFIE LES VUES SÉLECTIONNÉES, après confirmation. Change la
+ *              couleur de remplissage des objets de niveau 1 et plus. Les
+ *              objets de niveau 0 ne sont jamais modifiés.
+ * Règles     : - Niveau : 0 si le parent graphique de l'objet n'est pas un
+ *                élément de la même couche ; sinon niveau du parent + 1.
+ *                Un groupe, une note ou un élément d'une autre couche
+ *                interrompt donc la chaîne.
+ *              - Couleur de base : celle de l'objet de niveau 0 de la chaîne,
+ *                c'est-à-dire sa couleur de remplissage si elle est définie,
+ *                sinon la couleur par défaut de sa couche (COULEURS, lib).
+ *              - Niveau n : chaque composante rouge, verte et bleue de la
+ *                couleur de base est multipliée par max(FACTEUR_MIN,
+ *                1 - n × PAS). La couleur garde sa teinte et s'assombrit.
+ *              Même base et même niveau donnent toujours la même couleur.
+ *              Relancer le script ne change rien.
+ * Limite     : les couches « autre » (regroupement, jonction) ne sont pas
+ *              traitées. Si les couleurs par défaut ont été changées dans les
+ *              préférences d'Archi, définir la couleur des objets de niveau 0
+ *              ou ajuster COULEURS dans lib/commun.js.
+ */
+load(__DIR__ + "../lib/commun.js");
+
+var PAS = 0.10;          // part de noir ajoutée par niveau
+var FACTEUR_MIN = 0.50;  // plancher : jamais plus sombre que 50 % de la base
+
+function normaliser(c) {
+    return c ? String(c).trim().toLowerCase() : null;
+}
+
+/**
+ * Couleur du niveau n : chaque canal RVB de la base est multiplié par
+ * max(FACTEUR_MIN, 1 - n × PAS). La couleur garde sa teinte et s'assombrit.
+ */
+function couleurNiveau(base, n) {
+    var f = Math.max(FACTEUR_MIN, 1 - n * PAS);
+    return "#" + [1, 3, 5].map(function (i) {
+        var x = Math.round(parseInt(base.substr(i, 2), 16) * f);
+        return ("0" + x.toString(16)).slice(-2);
+    }).join("");
+}
+
+// 1. Plan : niveau et couleur cible de chaque objet, sans rien modifier.
+var vues = vuesSelectionnees();
+if (vues.length === 0) {
+    console.error("Aucune vue sélectionnée. Sélectionner une vue dans l'arbre, ou un objet dans une vue.");
+    exit();
+}
+console.clear();
+titre("Dégradé des superpositions");
+
+var plan = [], parNiveau = {};
+
+function parcourir(parent, chaine) {
+    $(parent).children().each(function (o) {
+        var c = lire(o, "concept");
+        var suite = null;
+        if (c && !/-relationship$/.test(c.type) && couche(c.type) !== "autre") {
+            var k = couche(c.type);
+            if (chaine && chaine.couche === k) {
+                suite = { couche: k, niveau: chaine.niveau + 1, base: chaine.base };
+            } else {
+                suite = { couche: k, niveau: 0, base: normaliser(lire(o, "fillColor")) || normaliser(COULEURS[k]) };
+            }
+            parNiveau[suite.niveau] = (parNiveau[suite.niveau] || 0) + 1;
+            if (suite.niveau > 0) {
+                var cible = couleurNiveau(suite.base, suite.niveau);
+                if (normaliser(lire(o, "fillColor")) !== cible) plan.push([o, cible]);
+            }
+        }
+        parcourir(o, suite);
+    });
+}
+vues.forEach(function (v) { parcourir(v, null); });
+
+Object.keys(parNiveau).sort().forEach(function (n) {
+    console.log("Niveau " + n + " : " + parNiveau[n] + " objet(s)");
+});
+
+if (plan.length === 0) {
+    console.log("Aucune couleur à changer.");
+    exit();
+}
+
+// 2. Application, après confirmation.
+if (!window.confirm(plan.length + " objet(s) à recolorer dans " + vues.length + " vue(s). Appliquer ?")) {
+    console.log("Annulé. Aucune modification.");
+    exit();
+}
+plan.forEach(function (p) { p[0].fillColor = p[1]; });
+console.log(plan.length + " objet(s) recoloré(s).");

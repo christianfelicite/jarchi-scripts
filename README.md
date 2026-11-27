@@ -19,6 +19,7 @@ automatiser la modélisation ArchiMate dans [Archi](https://www.archimatetool.co
 | `scripts/generation/` | création d'éléments, relations et vues |
 | `scripts/qualite/` | contrôles de cohérence du modèle, en lecture seule |
 | `scripts/export/` | sorties CSV, Markdown, rapports |
+| `scripts/mise-en-forme/` | apparence des vues : couleurs, styles |
 
 ## Conventions
 
