@@ -4,11 +4,9 @@
  *              natif d'Archi (Fichier › Importer › Modèle dans le modèle
  *              sélectionné). Les identifiants sont conservés : un nouvel
  *              import met à jour les objets au lieu de les dupliquer.
- * Prérequis  : vues à exporter marquées, au choix :
- *              - nom commençant par PREFIX ;
- *              - propriété PROP_EXPORT de valeur VALEUR_EXPORT (casse et
- *                espaces ignorés : « Oui » et « oui » valent).
- *              Modèle source enregistré : le script lit le fichier sur disque,
+ * Prérequis  : vues à exporter marquées par la propriété PROP_EXPORT de valeur
+ *              VALEUR_EXPORT (casse et espaces ignorés : « Oui » et « oui »
+ *              valent). Modèle source enregistré : le script lit le fichier sur disque,
  *              pas le modèle en mémoire.
  * Effets     : aucun sur le modèle source. Crée une copie du fichier source,
  *              puis élague cette copie : ne restent que les vues marquées et
@@ -18,12 +16,10 @@
  * Limite     : si Archi refuse d'ouvrir la copie, fermer le modèle source.
  *              Les deux partagent le même identifiant de modèle.
  */
-const PREFIX = "[Export]";
 const PROP_EXPORT = "export";
 const VALEUR_EXPORT = "oui";
 
 function estMarquee(v) {
-  if (v.name.startsWith(PREFIX)) return true;
   const val = v.prop(PROP_EXPORT);
   return val != null && String(val).trim().toLowerCase() === VALEUR_EXPORT;
 }
@@ -54,8 +50,8 @@ const m = $.model.load(dst.toString());
 // 3. Périmètre : vues marquées + concepts qu'elles affichent
 const views = $(m).find("view").filter(estMarquee);
 if (views.size() === 0) {
-  window.alert("Aucune vue marquée : ni nom commençant par " + PREFIX +
-               ", ni propriété « " + PROP_EXPORT + " » à « " + VALEUR_EXPORT + " ». Rien n'a été exporté.");
+  window.alert("Aucune vue n'a la propriété « " + PROP_EXPORT + " » à « " +
+               VALEUR_EXPORT + " ». Rien n'a été exporté.");
   Files.deleteIfExists(dst);
   exit();
 }
