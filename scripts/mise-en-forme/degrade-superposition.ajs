@@ -12,14 +12,18 @@
  *              élément de la même couche. Un groupe, une note ou un élément
  *              d'une autre couche interrompt la chaîne.
  * Niveau     : 0 pour un objet sans parent lié, sinon niveau du parent + 1.
- * Sens       : choisi au lancement. Dans une vue, deux objets d'une même
- *              couche au même niveau ont toujours la même couleur.
+ * Profondeur : nombre de conteneurs graphiques au-dessus de l'objet, quels
+ *              qu'ils soient (élément de toute couche, groupe). 0 pour un
+ *              objet posé directement sur la vue.
+ * Sens       : choisi au lancement.
  *              - Intérieur clair : rang = niveau. Le niveau 0 garde la couleur
- *                de la couche, les niveaux suivants s'éclaircissent.
- *              - Extérieur clair : rang = niveau le plus profond de la couche
- *                dans la vue − niveau. Ce niveau le plus profond garde la
- *                couleur de la couche, les niveaux au-dessus s'éclaircissent,
- *                objets isolés de niveau 0 compris.
+ *                de la couche, les niveaux suivants s'éclaircissent. Deux
+ *                objets d'une même couche au même niveau ont la même couleur.
+ *              - Extérieur clair : rang = profondeur la plus grande de la vue
+ *                − profondeur. Les objets les plus profonds gardent la couleur
+ *                de leur couche ; chaque niveau au-dessus, compté depuis
+ *                l'extérieur, reçoit la même part de blanc, quelle que soit la
+ *                couche et objets isolés compris.
  *              Couleur de base : la couleur par défaut de la couche (COULEURS,
  *              lib). Une couleur personnalisée sur un objet de rang 1 et plus
  *              est donc remplacée.
@@ -76,17 +80,17 @@ titre("Dégradé des superpositions");
 
 var EXTERIEUR_CLAIR = window.confirm(
     "Sens du dégradé ?\n\n" +
-    "OK : extérieur clair. Le niveau le plus profond garde la couleur de la couche, " +
-    "les niveaux au-dessus s'éclaircissent.\n\n" +
+    "OK : extérieur clair. Les objets les plus profonds gardent la couleur de leur couche ; " +
+    "chaque niveau compté depuis l'extérieur reçoit la même part de blanc.\n\n" +
     "Annuler : intérieur clair. Le conteneur garde la couleur de la couche, " +
     "les objets imbriqués s'éclaircissent."
 );
-console.log("Sens : " + (EXTERIEUR_CLAIR ? "extérieur clair (rang = profondeur − niveau)" : "intérieur clair (rang = niveau)"));
+console.log("Sens : " + (EXTERIEUR_CLAIR ? "extérieur clair (rang = profondeur max de la vue − profondeur)" : "intérieur clair (rang = niveau)"));
 
 // 2. Inventaire des objets en couche, avec leur niveau.
 var noeuds = [];
 
-function parcourir(vue, parent, chaine) {
+function parcourir(vue, parent, chaine, prof) {
     $(parent).children().each(function (o) {
         var c = lire(o, "concept");
         var noeud = null;
@@ -96,27 +100,28 @@ function parcourir(vue, parent, chaine) {
             noeud = {
                 o: o,
                 couche: k,
-                cle: vue.id + "|" + k,
-                niveau: lie ? lie.niveau + 1 : 0
+                vue: vue.id,
+                niveau: lie ? lie.niveau + 1 : 0,
+                profondeur: prof
             };
             noeuds.push(noeud);
         }
-        parcourir(vue, o, noeud);
+        parcourir(vue, o, noeud, prof + 1);
     });
 }
-vues.forEach(function (v) { parcourir(v, v, null); });
+vues.forEach(function (v) { parcourir(v, v, null, 0); });
 
-// Niveau le plus profond de chaque couche, vue par vue.
-var profondeur = {};
+// Profondeur la plus grande de chaque vue.
+var profondeurMax = {};
 noeuds.forEach(function (n) {
-    profondeur[n.cle] = Math.max(profondeur[n.cle] || 0, n.niveau);
+    profondeurMax[n.vue] = Math.max(profondeurMax[n.vue] || 0, n.profondeur);
 });
 
 // 3. Plan : couleur cible de chaque objet, sans rien modifier. Rang 0 :
 // seule une teinte du script est remplacée par la couleur de la couche.
 var plan = [], parRang = {};
 noeuds.forEach(function (n) {
-    var rang = EXTERIEUR_CLAIR ? profondeur[n.cle] - n.niveau : n.niveau;
+    var rang = EXTERIEUR_CLAIR ? profondeurMax[n.vue] - n.profondeur : n.niveau;
     parRang[rang] = (parRang[rang] || 0) + 1;
     var actuelle = normaliser(lire(n.o, "fillColor"));
     var cible;
