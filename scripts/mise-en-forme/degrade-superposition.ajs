@@ -11,20 +11,18 @@
  * Chaîne     : un objet est lié à son parent graphique si ce parent est un
  *              élément de la même couche. Un groupe, une note ou un élément
  *              d'une autre couche interrompt la chaîne.
- * Sens       : choisi au lancement.
- *              - Intérieur clair : rang = niveau, compté depuis l'extérieur.
- *                0 pour un objet sans parent lié, sinon niveau du parent + 1.
- *                Le conteneur garde la couleur de la couche, les objets
- *                imbriqués s'éclaircissent. Couleur de base : celle de l'objet
- *                de niveau 0 de la chaîne : sa couleur de remplissage si elle est
- *                définie et n'est pas une teinte du script, sinon la couleur
- *                par défaut de sa couche.
- *              - Extérieur clair : rang = hauteur, comptée depuis l'intérieur.
- *                0 pour un objet sans enfant lié, sinon 1 + la plus grande
- *                hauteur de ses enfants liés. L'objet le plus imbriqué garde la
- *                couleur de la couche, les conteneurs s'éclaircissent. Couleur
- *                de base : la couleur par défaut de la couche. Une couleur
- *                personnalisée sur un conteneur est donc remplacée.
+ * Niveau     : 0 pour un objet sans parent lié, sinon niveau du parent + 1.
+ * Sens       : choisi au lancement. Dans une vue, deux objets d'une même
+ *              couche au même niveau ont toujours la même couleur.
+ *              - Intérieur clair : rang = niveau. Le niveau 0 garde la couleur
+ *                de la couche, les niveaux suivants s'éclaircissent.
+ *              - Extérieur clair : rang = niveau le plus profond de la couche
+ *                dans la vue − niveau. Ce niveau le plus profond garde la
+ *                couleur de la couche, les niveaux au-dessus s'éclaircissent,
+ *                objets isolés de niveau 0 compris.
+ *              Couleur de base : la couleur par défaut de la couche (COULEURS,
+ *              lib). Une couleur personnalisée sur un objet de rang 1 et plus
+ *              est donc remplacée.
  * Couleur    : au rang n, la couleur de base est mélangée au blanc dans la
  *              proportion min(BLANC_MAX, n × PAS), sur chaque composante
  *              rouge, verte et bleue. Même base et même rang donnent toujours
@@ -67,12 +65,6 @@ function estTeinte(couleur, k) {
     return false;
 }
 
-/** Couleur de base d'un objet de niveau 0, pour le sens « intérieur clair ». */
-function baseRacine(o, k) {
-    var f = normaliser(lire(o, "fillColor"));
-    return f && !estTeinte(f, k) ? f : normaliser(COULEURS[k]);
-}
-
 // 1. Sélection et sens du dégradé.
 var vues = vuesSelectionnees();
 if (vues.length === 0) {
@@ -84,18 +76,17 @@ titre("Dégradé des superpositions");
 
 var EXTERIEUR_CLAIR = window.confirm(
     "Sens du dégradé ?\n\n" +
-    "OK : extérieur clair. L'objet le plus imbriqué garde la couleur de la couche, " +
-    "les conteneurs s'éclaircissent.\n\n" +
+    "OK : extérieur clair. Le niveau le plus profond garde la couleur de la couche, " +
+    "les niveaux au-dessus s'éclaircissent.\n\n" +
     "Annuler : intérieur clair. Le conteneur garde la couleur de la couche, " +
     "les objets imbriqués s'éclaircissent."
 );
-console.log("Sens : " + (EXTERIEUR_CLAIR ? "extérieur clair (rang = hauteur)" : "intérieur clair (rang = niveau)"));
+console.log("Sens : " + (EXTERIEUR_CLAIR ? "extérieur clair (rang = profondeur − niveau)" : "intérieur clair (rang = niveau)"));
 
-// 2. Inventaire des objets en couche, dans l'ordre du parcours : un parent est
-// toujours inscrit avant ses descendants.
+// 2. Inventaire des objets en couche, avec leur niveau.
 var noeuds = [];
 
-function parcourir(parent, chaine) {
+function parcourir(vue, parent, chaine) {
     $(parent).children().each(function (o) {
         var c = lire(o, "concept");
         var noeud = null;
@@ -105,29 +96,27 @@ function parcourir(parent, chaine) {
             noeud = {
                 o: o,
                 couche: k,
-                parent: lie,
-                niveau: lie ? lie.niveau + 1 : 0,
-                hauteur: 0,
-                base: lie ? lie.base : baseRacine(o, k)
+                cle: vue.id + "|" + k,
+                niveau: lie ? lie.niveau + 1 : 0
             };
             noeuds.push(noeud);
         }
-        parcourir(o, noeud);
+        parcourir(vue, o, noeud);
     });
 }
-vues.forEach(function (v) { parcourir(v, null); });
+vues.forEach(function (v) { parcourir(v, v, null); });
 
-// Hauteur : en ordre inverse, chaque descendant est traité avant ses ancêtres.
-for (var i = noeuds.length - 1; i >= 0; i--) {
-    var n = noeuds[i];
-    if (n.parent) n.parent.hauteur = Math.max(n.parent.hauteur, n.hauteur + 1);
-}
+// Niveau le plus profond de chaque couche, vue par vue.
+var profondeur = {};
+noeuds.forEach(function (n) {
+    profondeur[n.cle] = Math.max(profondeur[n.cle] || 0, n.niveau);
+});
 
 // 3. Plan : couleur cible de chaque objet, sans rien modifier. Rang 0 :
 // seule une teinte du script est remplacée par la couleur de la couche.
 var plan = [], parRang = {};
 noeuds.forEach(function (n) {
-    var rang = EXTERIEUR_CLAIR ? n.hauteur : n.niveau;
+    var rang = EXTERIEUR_CLAIR ? profondeur[n.cle] - n.niveau : n.niveau;
     parRang[rang] = (parRang[rang] || 0) + 1;
     var actuelle = normaliser(lire(n.o, "fillColor"));
     var cible;
@@ -135,8 +124,7 @@ noeuds.forEach(function (n) {
         if (!actuelle || !estTeinte(actuelle, n.couche)) return;
         cible = normaliser(COULEURS[n.couche]);
     } else {
-        var base = EXTERIEUR_CLAIR ? normaliser(COULEURS[n.couche]) : n.base;
-        cible = couleurRang(base, rang);
+        cible = couleurRang(normaliser(COULEURS[n.couche]), rang);
     }
     if (actuelle !== cible) plan.push([n.o, cible]);
 });
