@@ -104,10 +104,27 @@ try {
   const m = $.model.load(tmp.toString());
   console.log("Copie de travail chargée.");
 
-  // Concepts de l'arbre du modèle uniquement. Sur un modèle, find() renvoie
-  // aussi les objets graphiques des vues, qui portent le type de leur concept.
-  // Sans ce filtre, l'élagage supprimait le contenu des vues.
-  const concepts = sel => $(m).find(sel).filter(o => !lire(o, "view"));
+  // Inventaire par parcours de l'arbre du modèle : dossiers, concepts, vues.
+  // Le parcours ne descend jamais dans une vue : l'élagage ne peut donc pas
+  // toucher aux objets graphiques, que find() sur un modèle peut renvoyer.
+  const arbre = { vues: [], elements: [], relations: [] };
+  (function parcourir(o) {
+    $(o).children().each(c => {
+      if (c.type === "folder") parcourir(c);
+      else if (/-model$/.test(c.type)) arbre.vues.push(c);
+      else if (c.type.endsWith("-relationship")) arbre.relations.push(c);
+      else arbre.elements.push(c);
+    });
+  })(m);
+  console.log("Inventaire : " + arbre.vues.length + " vue(s), " + arbre.elements.length +
+              " élément(s), " + arbre.relations.length + " relation(s).");
+
+  const contenu = v => $(v).find().size();
+  function supprimer(liste) {
+    let n = 0;
+    liste.forEach(o => { try { o.delete(); n++; } catch (e) { /* déjà supprimé en cascade */ } });
+    return n;
+  }
 
   // 3. Décision d'export : marquage propre, sinon héritage du dossier parent.
   // Retourne true (exporter), false (exclure) ou null (aucune décision).
@@ -151,14 +168,14 @@ try {
     }
   }
 
-  $(m).find("view").filter(v => decision(v) === true).each(v => {
+  arbre.vues.filter(v => decision(v) === true).forEach(v => {
     keepViews.add(v.id);
     $(v).find().each(o => {
       if (o.concept) garder(o.concept, "affiché dans la vue « " + v.name + " »");
     });
   });
-  concepts("element").filter(e => decision(e) === true).each(e => garder(e, null));
-  concepts("relationship").filter(r => decision(r) === true).each(r => garder(r, null));
+  arbre.elements.filter(e => decision(e) === true).forEach(e => garder(e, null));
+  arbre.relations.filter(r => decision(r) === true).forEach(r => garder(r, null));
 
   console.log("Marqués : " + keepViews.size + " vue(s), " + keep.size + " concept(s).");
   if (keepViews.size === 0 && keep.size === 0) {
@@ -174,7 +191,7 @@ try {
     let added;
     do {
       added = 0;
-      concepts("relationship").each(r => {
+      arbre.relations.forEach(r => {
         if (!keep.has(r.id) && decision(r) !== false &&
             keep.has(r.source.id) && keep.has(r.target.id)) {
           keep.add(r.id);
@@ -185,10 +202,16 @@ try {
     } while (added > 0);
   }
 
-  // 5. Élagage de la copie
-  $(m).find("view").filter(v => !keepViews.has(v.id)).delete();
-  concepts("relationship").filter(r => !keep.has(r.id)).delete();
-  concepts("element").filter(e => !keep.has(e.id)).delete();
+  // 5. Élagage de la copie. Diagnostic : contenu des vues gardées avant/après.
+  const vuesGardees = arbre.vues.filter(v => keepViews.has(v.id));
+  const avant = vuesGardees.map(contenu);
+  const nV = supprimer(arbre.vues.filter(v => !keepViews.has(v.id)));
+  const nR = supprimer(arbre.relations.filter(r => !keep.has(r.id)));
+  const nE = supprimer(arbre.elements.filter(e => !keep.has(e.id)));
+  console.log("Supprimés : " + nV + " vue(s), " + nR + " relation(s), " + nE + " élément(s).");
+  vuesGardees.forEach((v, i) =>
+    console.log("  Vue « " + v.name + " » : " + avant[i] + " objet(s) avant élagage, " +
+                contenu(v) + " après."));
 
   // 6. Enregistrement : la copie de travail devient le fichier d'export.
   m.name = model.name + " (export)";
