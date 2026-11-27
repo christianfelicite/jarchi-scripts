@@ -1,6 +1,6 @@
 /*
  * Objectif   : distinguer les objets superposés d'une même couche ArchiMate en
- *              assombrissant leur couleur selon leur niveau d'imbrication.
+ *              éclaircissant leur couleur selon leur niveau d'imbrication.
  * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
  *              ou un objet dans une vue ouverte.
  * Effets     : MODIFIE LES VUES SÉLECTIONNÉES, après confirmation. Change la
@@ -13,9 +13,10 @@
  *              - Couleur de base : celle de l'objet de niveau 0 de la chaîne,
  *                c'est-à-dire sa couleur de remplissage si elle est définie,
  *                sinon la couleur par défaut de sa couche (COULEURS, lib).
- *              - Niveau n : chaque composante rouge, verte et bleue de la
- *                couleur de base est multipliée par max(FACTEUR_MIN,
- *                1 - n × PAS). La couleur garde sa teinte et s'assombrit.
+ *              - Niveau n : la couleur de base est mélangée au blanc dans la
+ *                proportion min(BLANC_MAX, n × PAS), sur chaque composante
+ *                rouge, verte et bleue. La couleur garde sa teinte et
+ *                s'éclaircit jusqu'à presque blanc, sans jamais l'atteindre.
  *              Même base et même niveau donnent toujours la même couleur.
  *              Relancer le script ne change rien.
  * Limite     : les couches « autre » (regroupement, jonction) ne sont pas
@@ -25,21 +26,23 @@
  */
 load(__DIR__ + "../lib/commun.js");
 
-var PAS = 0.10;          // part de noir ajoutée par niveau
-var FACTEUR_MIN = 0.50;  // plancher : jamais plus sombre que 50 % de la base
+var PAS = 0.20;        // part de blanc ajoutée par niveau
+var BLANC_MAX = 0.85;  // plafond : la couleur ne devient jamais tout à fait blanche
 
 function normaliser(c) {
     return c ? String(c).trim().toLowerCase() : null;
 }
 
 /**
- * Couleur du niveau n : chaque canal RVB de la base est multiplié par
- * max(FACTEUR_MIN, 1 - n × PAS). La couleur garde sa teinte et s'assombrit.
+ * Couleur du niveau n : chaque canal RVB de la base est rapproché de 255 dans
+ * la proportion min(BLANC_MAX, n × PAS). La couleur garde sa teinte et
+ * s'éclaircit.
  */
 function couleurNiveau(base, n) {
-    var f = Math.max(FACTEUR_MIN, 1 - n * PAS);
+    var f = Math.min(BLANC_MAX, n * PAS);
     return "#" + [1, 3, 5].map(function (i) {
-        var x = Math.round(parseInt(base.substr(i, 2), 16) * f);
+        var c = parseInt(base.substr(i, 2), 16);
+        var x = Math.round(c + (255 - c) * f);
         return ("0" + x.toString(16)).slice(-2);
     }).join("");
 }
