@@ -18,6 +18,7 @@ automatiser la modélisation ArchiMate dans [Archi](https://www.archimatetool.co
 | `scripts/lib/` | fonctions partagées, chargées par `load()`. Jamais exécutées seules. |
 | `scripts/generation/` | création d'éléments, relations et vues |
 | `scripts/qualite/` | contrôles de cohérence du modèle, en lecture seule |
+| `scripts/edition/` | modification des concepts par formulaire, après confirmation |
 | `scripts/export/` | sorties CSV, Markdown, rapports |
 | `scripts/mise-en-forme/` | apparence des vues : couleurs, styles |
 

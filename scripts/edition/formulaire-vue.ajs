@@ -1,0 +1,491 @@
+/*
+ * Objectif   : modifier dans un tableau les éléments et les relations d'une
+ *              ou plusieurs vues : nom, spécialisation, documentation,
+ *              propriétés, et les attributs propres à certaines relations.
+ * Prérequis  : sélectionner une ou plusieurs vues dans l'arbre du modèle,
+ *              ou un objet dans une vue ouverte.
+ * Effets     : MODIFIE LE MODÈLE, après confirmation. Rien n'est écrit avant
+ *              le clic sur « Appliquer » puis la validation du récapitulatif.
+ *              Les modifications portent sur les concepts : elles valent pour
+ *              toutes les vues où ils figurent. Compte rendu dans la console.
+ * Saisie     : double-clic sur une cellule.
+ *              - Texte : Entrée ou clic ailleurs valide, Échap annule.
+ *              - Documentation : fenêtre multiligne.
+ *              - Spécialisation, type d'accès, sens d'association : liste.
+ *              Cellule modifiée : fond surligné. Texte grisé : non modifiable.
+ *              Remettre la valeur d'origine annule la modification.
+ * Colonnes   : Éléments : nom, type, spécialisation, documentation, une
+ *              colonne par clé de propriété rencontrée, vues (si plusieurs).
+ *              Relations : nom, type, source, cible, attribut, puis les mêmes
+ *              colonnes communes.
+ * Attribut   : type d'accès (relation d'accès), force (relation d'influence),
+ *              sens (relation d'association). Vide pour les autres relations.
+ * Propriétés : cellule vidée = propriété supprimée. Cellule remplie sur un
+ *              concept qui n'a pas la clé = propriété ajoutée. Une clé répétée
+ *              sur un même concept n'est pas modifiable ici.
+ * Limites    : ne change ni le type d'un concept (cela recréerait le concept
+ *              sous un autre identifiant), ni la source ou la cible d'une
+ *              relation. Ne crée ni clé de propriété absente de toutes les
+ *              lignes, ni spécialisation : la liste propose celles déjà
+ *              définies dans le modèle pour le type du concept.
+ */
+load(__DIR__ + "../lib/commun.js");
+load(__DIR__ + "../lib/tableau.js");
+
+var Point = Java.type("org.eclipse.swt.graphics.Point");
+var TableEditor = Java.type("org.eclipse.swt.custom.TableEditor");
+var CCombo = Java.type("org.eclipse.swt.custom.CCombo");
+
+var RECAPITULATIF_MAX = 40;
+var LONGUEUR_APERCU = 60;
+
+// Attributs propres à certains types de relation. choix : [valeur, libellé].
+var ATTRIBUTS = {
+    "access-relationship": {
+        champ: "accessType",
+        choix: [["write", "Écriture"], ["read", "Lecture"], ["access", "Accès"], ["readwrite", "Lecture/écriture"]]
+    },
+    "association-relationship": {
+        champ: "associationDirected",
+        choix: [[true, "Orientée"], [false, "Non orientée"]]
+    },
+    "influence-relationship": { champ: "influenceStrength" }
+};
+
+// ---------------------------------------------------------------------------
+// Valeurs
+
+/** Fins de ligne unifiées, pour comparer deux textes saisis. */
+function normaliser(v) {
+    return texte(v).replace(/\r\n?/g, "\n");
+}
+
+function libelleAttribut(def, valeur) {
+    if (!def.choix) return texte(valeur);
+    for (var i = 0; i < def.choix.length; i++) {
+        if (String(def.choix[i][0]) === String(valeur)) return def.choix[i][1];
+    }
+    return texte(valeur);
+}
+
+function valeurAttribut(def, libelle) {
+    if (!def.choix) return libelle;
+    for (var i = 0; i < def.choix.length; i++) {
+        if (def.choix[i][1] === libelle) return def.choix[i][0];
+    }
+    throw new Error("valeur inconnue : " + libelle);
+}
+
+/** Lecture brute : false et "" sont des valeurs, pas des absences. */
+function lireAttribut(c, champ) {
+    try {
+        return c[champ];
+    } catch (e) {
+        return undefined;
+    }
+}
+
+var specialisations = null;
+
+/** Noms des spécialisations du modèle par type de concept ; false si illisibles. */
+function specialisationsParType() {
+    if (specialisations !== null) return specialisations;
+    try {
+        var liste = model.specializations;
+        specialisations = {};
+        for (var i = 0; i < liste.length; i++) {
+            var t = String(liste[i].type);
+            (specialisations[t] = specialisations[t] || []).push(String(liste[i].name));
+        }
+    } catch (e) {
+        console.log("Spécialisations du modèle illisibles (" + e + ") : saisie libre.");
+        specialisations = false;
+    }
+    return specialisations;
+}
+
+// ---------------------------------------------------------------------------
+// Lignes et colonnes
+
+function completerElement(c, ligne) {
+    ligne.concept = c;
+    ligne.modifs = {};
+}
+
+function completerRelation(r, ligne) {
+    extremites(r, ligne);
+    completerElement(r, ligne);
+    var def = ATTRIBUTS[r.type];
+    ligne.attribut = def ? libelleAttribut(def, lireAttribut(r, def.champ)) : "";
+}
+
+function modifiee(l, col) {
+    return l.modifs.hasOwnProperty(col.cle);
+}
+
+/** Enregistre une saisie ; revenir à la valeur d'origine annule la modification. */
+function definir(l, col, v) {
+    if (normaliser(v) === normaliser(col.initial(l))) delete l.modifs[col.cle];
+    else l.modifs[col.cle] = v;
+}
+
+/**
+ * Colonne modifiable. cle : identifiant unique de la colonne ;
+ * initial(l) : valeur d'origine ; saisie(l) : "texte", "multiligne", liste de
+ * libellés, ou null si la cellule n'est pas modifiable ; ecrire(concept, v).
+ */
+function colonneModifiable(cle, titre, initial, saisie, ecrire) {
+    return {
+        cle: cle,
+        titre: titre,
+        initial: initial,
+        saisie: saisie,
+        ecrire: ecrire,
+        valeur: function (l) {
+            return l.modifs.hasOwnProperty(cle) ? texte(l.modifs[cle]) : texte(initial(l));
+        }
+    };
+}
+
+var COL_NOM = colonneModifiable("nom", "Nom",
+    function (l) { return l.nom; },
+    function () { return "texte"; },
+    function (c, v) { c.name = v; });
+
+var COL_ATTRIBUT = colonneModifiable("attribut", "Attribut",
+    function (l) { return l.attribut; },
+    function (l) {
+        var def = ATTRIBUTS[l.concept.type];
+        if (!def) return null;
+        return def.choix ? def.choix.map(function (x) { return x[1]; }) : "texte";
+    },
+    function (c, v) {
+        var def = ATTRIBUTS[c.type];
+        c[def.champ] = valeurAttribut(def, v);
+    });
+
+function saisieSpecialisation(l) {
+    var parType = specialisationsParType();
+    if (parType === false) return "texte";
+    var choix = [""].concat(parType[l.concept.type] || []);
+    if (choix.indexOf(l.specialisation) < 0) choix.push(l.specialisation);
+    return choix;
+}
+
+/** Colonnes communes : spécialisation, documentation, propriétés, vues. */
+function colonnesCommunes(cles, plusieursVues) {
+    var cols = [
+        colonneModifiable("specialisation", "Spécialisation",
+            function (l) { return l.specialisation; },
+            saisieSpecialisation,
+            function (c, v) { c.specialization = v === "" ? null : v; }),
+        colonneModifiable("documentation", "Documentation",
+            function (l) { return l.documentation; },
+            function () { return "multiligne"; },
+            function (c, v) { c.documentation = v; })
+    ];
+    cles.forEach(function (cle) {
+        cols.push(colonneModifiable("propriete:" + cle, cle,
+            function (l) { return l.proprietes[cle]; },
+            function (l) { return (l.concept.prop(cle, true) || []).length > 1 ? null : "texte"; },
+            function (c, v) {
+                if (v === "") c.removeProp(cle);
+                else c.prop(cle, v);
+            }));
+    });
+    if (plusieursVues) cols.push({ titre: "Vues", valeur: function (l) { return l.vues.join(", "); } });
+    return cols;
+}
+
+/** Saisie possible pour cette cellule, ou null. */
+function saisieDe(col, l) {
+    return col.saisie ? col.saisie(l) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Changements
+
+function apercu(v) {
+    var s = enLigne(v);
+    return s.length > LONGUEUR_APERCU ? s.slice(0, LONGUEUR_APERCU - 1) + "…" : s;
+}
+
+function changements(contenus) {
+    var liste = [];
+    contenus.forEach(function (ct) {
+        ct.lignes.forEach(function (l) {
+            ct.cols.forEach(function (col) {
+                if (col.cle && modifiee(l, col)) {
+                    liste.push({ ligne: l, col: col, avant: texte(col.initial(l)), apres: texte(l.modifs[col.cle]) });
+                }
+            });
+        });
+    });
+    return liste;
+}
+
+function decrire(ch) {
+    return ch.ligne.type + " « " + ch.ligne.nom + " » — " + ch.col.titre +
+        " : « " + apercu(ch.avant) + " » → « " + apercu(ch.apres) + " »";
+}
+
+function recapitulatif(liste) {
+    var lignes = liste.slice(0, RECAPITULATIF_MAX).map(decrire);
+    if (liste.length > RECAPITULATIF_MAX) {
+        lignes.push("… et " + (liste.length - RECAPITULATIF_MAX) + " autre(s), détaillées dans la console.");
+    }
+    return liste.length + " modification(s) à appliquer au modèle :\n\n" + lignes.join("\n") + "\n\nAppliquer ?";
+}
+
+function appliquer(liste) {
+    var reussites = 0, echecs = 0;
+    liste.forEach(function (ch) {
+        try {
+            ch.col.ecrire(ch.ligne.concept, ch.apres);
+            reussites++;
+            console.log("Appliqué : " + decrire(ch));
+        } catch (e) {
+            echecs++;
+            console.error("Échec    : " + decrire(ch) + " — " + e);
+        }
+    });
+    titre("Bilan");
+    console.log(reussites + " modification(s) appliquée(s), " + echecs + " échec(s).");
+}
+
+// ---------------------------------------------------------------------------
+// Fenêtres
+
+/** Fenêtre de saisie multiligne. Retourne le texte validé, ou null. */
+function saisirMultiligne(parent, titreFenetre, valeur) {
+    var resultat = null;
+    var d = new Shell(parent, SWT.DIALOG_TRIM | SWT.RESIZE | SWT.APPLICATION_MODAL);
+    d.setText(titreFenetre);
+    d.setLayout(new GridLayout(2, false));
+
+    var zone = new Text(d, SWT.MULTI | SWT.BORDER | SWT.WRAP | SWT.V_SCROLL);
+    var gd = new GridData(SWT.FILL, SWT.FILL, true, true, 2, 1);
+    gd.widthHint = 600;
+    gd.heightHint = 300;
+    zone.setLayoutData(gd);
+    zone.setText(valeur);
+
+    var ok = new Button(d, SWT.PUSH);
+    ok.setText("OK");
+    ok.setLayoutData(new GridData(SWT.END, SWT.CENTER, true, false));
+    var annuler = new Button(d, SWT.PUSH);
+    annuler.setText("Annuler");
+
+    ok.addListener(SWT.Selection, function () {
+        resultat = texte(zone.getText());
+        d.close();
+    });
+    annuler.addListener(SWT.Selection, function () { d.close(); });
+
+    d.pack();
+    d.open();
+    attendreFermeture(d);
+    return resultat;
+}
+
+/**
+ * Fenêtre d'édition. contenus : [{ titre, cols, lignes }].
+ * Retourne true si l'utilisateur a cliqué sur « Appliquer ».
+ */
+function editer(titreFenetre, contenus) {
+    var valide = false;
+    var fenetre = new Shell(shell, SWT.DIALOG_TRIM | SWT.RESIZE | SWT.APPLICATION_MODAL);
+    fenetre.setText(titreFenetre);
+    fenetre.setLayout(new GridLayout(3, false));
+
+    var ecran = fenetre.getDisplay();
+    var FOND_MODIFIE = ecran.getSystemColor(SWT.COLOR_INFO_BACKGROUND);
+    var TEXTE_MODIFIE = ecran.getSystemColor(SWT.COLOR_INFO_FOREGROUND);
+    var TEXTE_FIGE = ecran.getSystemColor(SWT.COLOR_DARK_GRAY);
+
+    var dossier = new TabFolder(fenetre, SWT.NONE);
+    dossier.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true, 3, 1));
+
+    var etat = new Label(fenetre, SWT.NONE);
+    etat.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+    var boutonAppliquer = new Button(fenetre, SWT.PUSH);
+    boutonAppliquer.setText("Appliquer…");
+    var boutonAnnuler = new Button(fenetre, SWT.PUSH);
+    boutonAnnuler.setText("Annuler");
+
+    function majEtat(message) {
+        var n = changements(contenus).length;
+        boutonAppliquer.setEnabled(n > 0);
+        etat.setText((message ? message + " — " : "") + n + " modification(s) en attente. Double-clic sur une cellule pour la modifier.");
+    }
+
+    function decorer(item, l, cols) {
+        cols.forEach(function (col, i) {
+            var m = col.cle && modifiee(l, col);
+            item.setBackground(i, m ? FOND_MODIFIE : null);
+            item.setForeground(i, m ? TEXTE_MODIFIE : saisieDe(col, l) ? null : TEXTE_FIGE);
+        });
+    }
+
+    contenus.forEach(function (ct) {
+        var o = onglet(dossier, ct.titre, ct.cols, ct.lignes, {
+            decorer: function (item, l) { decorer(item, l, ct.cols); }
+        });
+        brancherEdition(o);
+    });
+
+    /** Édition en place : double-clic → contrôle de saisie sur la cellule. */
+    function brancherEdition(o) {
+        var tableau = o.tableau;
+        var editeur = new TableEditor(tableau);
+        editeur.horizontalAlignment = SWT.LEFT;
+        editeur.grabHorizontal = true;
+
+        function valider(item, i, l, v) {
+            var col = o.cols[i];
+            definir(l, col, v);
+            if (!item.isDisposed()) {
+                item.setText(i, enLigne(col.valeur(l)));
+                decorer(item, l, o.cols);
+            }
+            majEtat();
+        }
+
+        function ouvrir(item, i) {
+            var l = o.affichees()[tableau.indexOf(item)];
+            var col = o.cols[i];
+            var saisie = l ? saisieDe(col, l) : null;
+            if (!saisie) {
+                majEtat("« " + col.titre + " » n'est pas modifiable ici");
+                return;
+            }
+            if (saisie === "multiligne") {
+                var v = saisirMultiligne(fenetre, col.titre + " — " + (l.nom || l.type), col.valeur(l));
+                if (v !== null) valider(item, i, l, v);
+                return;
+            }
+
+            var ancien = editeur.getEditor();
+            if (ancien && !ancien.isDisposed()) ancien.dispose();
+
+            var controle, fini = false;
+            if (saisie === "texte") {
+                controle = new Text(tableau, SWT.NONE);
+                controle.setText(col.valeur(l));
+                controle.selectAll();
+            } else {
+                controle = new CCombo(tableau, SWT.READ_ONLY);
+                saisie.forEach(function (x) { controle.add(x === "" ? " " : x); });
+                controle.select(Math.max(0, saisie.indexOf(col.valeur(l))));
+            }
+
+            function lireSaisie() {
+                if (saisie === "texte") return texte(controle.getText());
+                var index = controle.getSelectionIndex();
+                return index < 0 ? col.valeur(l) : saisie[index];
+            }
+
+            function terminer(enregistrer) {
+                if (fini) return;
+                fini = true;
+                if (enregistrer) valider(item, i, l, lireSaisie());
+                controle.dispose();
+            }
+
+            controle.addListener(SWT.Traverse, function (e) {
+                if (e.detail === SWT.TRAVERSE_RETURN) {
+                    e.doit = false;
+                    terminer(true);
+                } else if (e.detail === SWT.TRAVERSE_ESCAPE) {
+                    e.doit = false;
+                    terminer(false);
+                }
+            });
+            controle.addListener(SWT.FocusOut, function () { terminer(true); });
+            if (saisie !== "texte") controle.addListener(SWT.Selection, function () { terminer(true); });
+
+            editeur.setEditor(controle, item, i);
+            controle.setFocus();
+            if (saisie !== "texte") controle.setListVisible(true);
+        }
+
+        tableau.addListener(SWT.MouseDoubleClick, function (e) {
+            var item = tableau.getItem(new Point(e.x, e.y));
+            if (!item) return;
+            for (var i = 0; i < o.cols.length; i++) {
+                if (item.getBounds(i).contains(e.x, e.y)) {
+                    ouvrir(item, i);
+                    return;
+                }
+            }
+        });
+    }
+
+    boutonAppliquer.addListener(SWT.Selection, function () {
+        valide = true;
+        fenetre.close();
+    });
+    boutonAnnuler.addListener(SWT.Selection, function () { fenetre.close(); });
+    fenetre.addListener(SWT.Close, function (e) {
+        if (valide) return;
+        var n = changements(contenus).length;
+        if (n > 0 && !window.confirm("Abandonner " + n + " modification(s) non appliquée(s) ?")) e.doit = false;
+    });
+
+    majEtat();
+    fenetre.pack();
+    fenetre.open();
+    attendreFermeture(fenetre);
+    return valide;
+}
+
+// ---------------------------------------------------------------------------
+
+exigerModele();
+console.clear();
+titre("Formulaire de vue");
+
+var vues = vuesSelectionnees();
+if (vues.length === 0) {
+    console.error("Aucune vue ArchiMate dans la sélection.");
+    exit();
+}
+
+var elements = collecter(vues, "element", completerElement);
+var relations = collecter(vues, "relationship", completerRelation);
+if (elements.lignes.length + relations.lignes.length === 0) {
+    console.log("Aucun élément ni relation dans la sélection de vues.");
+    exit();
+}
+
+var plusieursVues = vues.length > 1;
+var libelle = vues.length === 1 ? vues[0].name : model.name;
+console.log(elements.lignes.length + " élément(s), " + relations.lignes.length +
+    " relation(s) dans " + vues.length + " vue(s).");
+
+var contenus = [
+    {
+        titre: "Éléments",
+        cols: [COL_NOM, colonne("Type", "type")].concat(colonnesCommunes(elements.cles, plusieursVues)),
+        lignes: elements.lignes
+    },
+    {
+        titre: "Relations",
+        cols: [COL_NOM, colonne("Type", "type"), colonne("Source", "source"), colonne("Cible", "cible"), COL_ATTRIBUT]
+            .concat(colonnesCommunes(relations.cles, plusieursVues)),
+        lignes: relations.lignes
+    }
+];
+
+if (!editer("Modifier les éléments et relations — " + libelle, contenus)) {
+    console.log("Fenêtre fermée sans appliquer : modèle inchangé.");
+    exit();
+}
+
+var liste = changements(contenus);
+if (!window.confirm(recapitulatif(liste))) {
+    console.log("Récapitulatif refusé : modèle inchangé.");
+    exit();
+}
+titre("Modifications");
+appliquer(liste);
