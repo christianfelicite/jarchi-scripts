@@ -4,25 +4,33 @@
  *              natif d'Archi (Fichier › Importer › Modèle dans le modèle
  *              sélectionné). Les identifiants sont conservés : un nouvel
  *              import met à jour les objets au lieu de les dupliquer.
- * Prérequis  : vues à exporter marquées par la propriété PROP_EXPORT de valeur
- *              VALEUR_EXPORT (casse et espaces ignorés : « Oui » et « oui »
- *              valent). Modèle source enregistré : le script lit le fichier sur disque,
+ * Prérequis  : objets à exporter marqués par la propriété PROP_EXPORT.
+ *              Modèle source enregistré : le script lit le fichier sur disque,
  *              pas le modèle en mémoire.
+ * Marquage   : valeurs reconnues VALEUR_EXPORT et VALEUR_EXCLUSION, casse et
+ *              espaces ignorés. Toute autre valeur, ou l'absence de la
+ *              propriété, reprend la décision du dossier parent, puis de ses
+ *              ancêtres. Sans décision, l'objet n'est pas exporté.
+ *              - Vue marquée : exportée avec les concepts qu'elle affiche.
+ *              - Dossier marqué : décision transmise à tout son contenu,
+ *                sous-dossiers compris, sauf marquage propre contraire.
+ *              - Élément marqué : exporté seul, sans ses voisins.
+ *              - Relation marquée : exportée avec sa source et sa cible.
  * Effets     : aucun sur le modèle source. Crée une copie du fichier source,
- *              puis élague cette copie : ne restent que les vues marquées et
- *              les concepts qu'elles affichent. Option demandée au lancement :
- *              garder aussi les relations non dessinées entre concepts
- *              conservés. Aucun élément supplémentaire n'est tiré.
+ *              puis élague cette copie : ne restent que les objets exportés.
+ *              Option demandée au lancement : garder aussi les relations non
+ *              dessinées entre concepts conservés, sauf celles exclues.
+ * Priorité   : un concept exclu reste exporté s'il est affiché dans une vue
+ *              exportée ou s'il est l'extrémité d'une relation exportée, faute
+ *              de quoi la vue ou la relation serait cassée. Chaque cas est
+ *              signalé dans la console.
  * Limite     : si Archi refuse d'ouvrir la copie, fermer le modèle source.
- *              Les deux partagent le même identifiant de modèle.
+ *              Les deux partagent le même identifiant de modèle. Les dossiers
+ *              vidés restent dans la copie.
  */
 const PROP_EXPORT = "export";
 const VALEUR_EXPORT = "oui";
-
-function estMarquee(v) {
-  const val = v.prop(PROP_EXPORT);
-  return val != null && String(val).trim().toLowerCase() === VALEUR_EXPORT;
-}
+const VALEUR_EXCLUSION = "non";
 
 const Files   = Java.type("java.nio.file.Files");
 const Paths   = Java.type("java.nio.file.Paths");
@@ -35,8 +43,8 @@ const dstPath = window.promptSaveFile({ title: "Copie à créer", filterExtensio
 if (!dstPath) exit();
 const KEEP_HIDDEN_RELATIONS = window.confirm(
   "Garder aussi les relations non dessinées entre éléments exportés ?\n\n" +
-  "OK : oui, toutes les relations entre éléments conservés.\n" +
-  "Annuler : non, uniquement les relations visibles dans les vues."
+  "OK : oui, toutes les relations entre éléments conservés, sauf celles exclues.\n" +
+  "Annuler : non, uniquement les relations visibles ou marquées."
 );
 
 const src = Paths.get(srcPath).toAbsolutePath();
@@ -47,21 +55,65 @@ if (src.equals(dst)) { window.alert("La copie doit être un fichier différent d
 Files.copy(src, dst, REPLACE);
 const m = $.model.load(dst.toString());
 
-// 3. Périmètre : vues marquées + concepts qu'elles affichent
-const views = $(m).find("view").filter(estMarquee);
-if (views.size() === 0) {
-  window.alert("Aucune vue n'a la propriété « " + PROP_EXPORT + " » à « " +
-               VALEUR_EXPORT + " ». Rien n'a été exporté.");
+// 3. Décision d'export : marquage propre, sinon héritage du dossier parent.
+// Retourne true (exporter), false (exclure) ou null (aucune décision).
+function marquage(o) {
+  const val = o.prop(PROP_EXPORT);
+  if (val == null) return null;
+  const v = String(val).trim().toLowerCase();
+  if (v === VALEUR_EXPORT) return true;
+  if (v === VALEUR_EXCLUSION) return false;
+  return null;
+}
+
+function dossierParent(o) {
+  const p = $(o).parent();
+  if (p.size() === 0) return null;
+  const d = p.first();
+  return d && d.type === "folder" ? d : null;
+}
+
+const cacheDossiers = {};
+function decision(o) {
+  const propre = marquage(o);
+  if (propre !== null) return propre;
+  const d = dossierParent(o);
+  if (!d) return null;
+  if (!(d.id in cacheDossiers)) cacheDossiers[d.id] = decision(d);
+  return cacheDossiers[d.id];
+}
+
+// 4. Périmètre
+const keepViews = new Set(), keep = new Set(), forces = [];
+
+function garder(c, raison) {
+  if (keep.has(c.id)) return;
+  keep.add(c.id);
+  if (raison && decision(c) === false)
+    forces.push(c.type + " « " + c.name + " » : exclu, mais gardé car " + raison);
+  if (c.type.endsWith("-relationship")) {
+    garder(c.source, "extrémité d'une relation exportée");
+    garder(c.target, "extrémité d'une relation exportée");
+  }
+}
+
+$(m).find("view").filter(v => decision(v) === true).each(v => {
+  keepViews.add(v.id);
+  $(v).find().each(o => {
+    if (o.concept) garder(o.concept, "affiché dans la vue « " + v.name + " »");
+  });
+});
+$(m).find("element").filter(e => decision(e) === true).each(e => garder(e, null));
+$(m).find("relationship").filter(r => decision(r) === true).each(r => garder(r, null));
+
+if (keepViews.size === 0 && keep.size === 0) {
+  window.alert("Aucun objet marqué « " + PROP_EXPORT + " » à « " + VALEUR_EXPORT +
+               " », directement ou par son dossier. Rien n'a été exporté.");
   Files.deleteIfExists(dst);
   exit();
 }
-const keepViews = new Set(), keep = new Set();
-views.each(v => {
-  keepViews.add(v.id);
-  $(v).find().each(o => { if (o.concept) keep.add(o.concept.id); });
-});
 
-// 3 bis. Option : relations non dessinées entre concepts conservés.
+// 4 bis. Option : relations non dessinées entre concepts conservés.
 // Boucle jusqu'à stabilité, car une relation peut relier une autre relation.
 let hidden = 0;
 if (KEEP_HIDDEN_RELATIONS) {
@@ -69,7 +121,8 @@ if (KEEP_HIDDEN_RELATIONS) {
   do {
     added = 0;
     $(m).find("relationship").each(r => {
-      if (!keep.has(r.id) && keep.has(r.source.id) && keep.has(r.target.id)) {
+      if (!keep.has(r.id) && decision(r) !== false &&
+          keep.has(r.source.id) && keep.has(r.target.id)) {
         keep.add(r.id);
         added++;
       }
@@ -78,12 +131,17 @@ if (KEEP_HIDDEN_RELATIONS) {
   } while (added > 0);
 }
 
-// 4. Élagage de la copie
+// 5. Élagage de la copie
 $(m).find("view").filter(v => !keepViews.has(v.id)).delete();
 $(m).find("relationship").filter(r => !keep.has(r.id)).delete();
 $(m).find("element").filter(e => !keep.has(e.id)).delete();
 
-// 5. Enregistrement de la copie
+// 6. Enregistrement de la copie
 m.save();
 console.log("Export prêt : " + dst + " (" + keepViews.size + " vues, " + keep.size +
             " concepts dont " + hidden + " relations non dessinées)");
+if (forces.length > 0) {
+  console.log("");
+  console.log(forces.length + " objet(s) exclu(s) mais gardé(s) :");
+  forces.forEach(f => console.log("  " + f));
+}
