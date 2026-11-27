@@ -28,7 +28,10 @@
  *              de quoi la vue ou la relation serait cassée. Chaque cas est
  *              signalé dans la console.
  * Limite     : si jArchi ne fournit pas le chemin du fichier du modèle, le
- *              script le demande. Les dossiers vidés restent dans l'export.
+ *              script le demande. Le modèle exporté s'appelle « <source>
+ *              (export) ». Si jArchi ouvre la copie de travail dans Archi sans
+ *              savoir la refermer, l'alerte finale le signale : la fermer sans
+ *              l'enregistrer. Les dossiers vidés restent dans l'export.
  */
 load(__DIR__ + "../lib/commun.js");
 
@@ -101,6 +104,11 @@ try {
   const m = $.model.load(tmp.toString());
   console.log("Copie de travail chargée.");
 
+  // Concepts de l'arbre du modèle uniquement. Sur un modèle, find() renvoie
+  // aussi les objets graphiques des vues, qui portent le type de leur concept.
+  // Sans ce filtre, l'élagage supprimait le contenu des vues.
+  const concepts = sel => $(m).find(sel).filter(o => !lire(o, "view"));
+
   // 3. Décision d'export : marquage propre, sinon héritage du dossier parent.
   // Retourne true (exporter), false (exclure) ou null (aucune décision).
   function marquage(o) {
@@ -149,8 +157,8 @@ try {
       if (o.concept) garder(o.concept, "affiché dans la vue « " + v.name + " »");
     });
   });
-  $(m).find("element").filter(e => decision(e) === true).each(e => garder(e, null));
-  $(m).find("relationship").filter(r => decision(r) === true).each(r => garder(r, null));
+  concepts("element").filter(e => decision(e) === true).each(e => garder(e, null));
+  concepts("relationship").filter(r => decision(r) === true).each(r => garder(r, null));
 
   console.log("Marqués : " + keepViews.size + " vue(s), " + keep.size + " concept(s).");
   if (keepViews.size === 0 && keep.size === 0) {
@@ -166,7 +174,7 @@ try {
     let added;
     do {
       added = 0;
-      $(m).find("relationship").each(r => {
+      concepts("relationship").each(r => {
         if (!keep.has(r.id) && decision(r) !== false &&
             keep.has(r.source.id) && keep.has(r.target.id)) {
           keep.add(r.id);
@@ -179,11 +187,16 @@ try {
 
   // 5. Élagage de la copie
   $(m).find("view").filter(v => !keepViews.has(v.id)).delete();
-  $(m).find("relationship").filter(r => !keep.has(r.id)).delete();
-  $(m).find("element").filter(e => !keep.has(e.id)).delete();
+  concepts("relationship").filter(r => !keep.has(r.id)).delete();
+  concepts("element").filter(e => !keep.has(e.id)).delete();
 
   // 6. Enregistrement : la copie de travail devient le fichier d'export.
+  m.name = model.name + " (export)";
   m.save();
+  // Le chargement peut ouvrir la copie dans Archi : on la referme avant de
+  // déplacer son fichier. Selon la version de jArchi, close() peut manquer.
+  let fermee = false;
+  try { m.close(); fermee = true; } catch (e) { /* méthode absente */ }
   Files.move(tmp, dst, REPLACE);
   console.log("");
   console.log("Export prêt : " + dst + " (" + keepViews.size + " vues, " + keep.size +
@@ -193,7 +206,9 @@ try {
     console.log(forces.length + " objet(s) exclu(s) mais gardé(s) :");
     forces.forEach(f => console.log("  " + f));
   }
-  window.alert("Export créé :\n" + dst);
+  window.alert("Export créé :\n" + dst + (fermee ? "" :
+    "\n\nArchi a ouvert la copie de travail « " + m.name + " ». " +
+    "Ferme-la sans l'enregistrer : l'export est déjà créé."));
 } finally {
   Files.deleteIfExists(tmp); // sans effet si le fichier a été déplacé
 }
