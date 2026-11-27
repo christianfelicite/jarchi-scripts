@@ -16,8 +16,10 @@
  *                sous-dossiers compris, sauf marquage propre contraire.
  *              - Élément marqué : exporté seul, sans ses voisins.
  *              - Relation marquée : exportée avec sa source et sa cible.
- * Effets     : aucun sur le modèle source. Crée une copie du fichier source,
- *              puis élague cette copie : ne restent que les objets exportés.
+ * Effets     : aucun sur le modèle source. Élague une copie de travail
+ *              temporaire, puis l'enregistre comme fichier d'export : ne
+ *              restent que les objets exportés. Aucun fichier d'export n'est
+ *              créé si rien n'est marqué ou si le script échoue.
  *              Option demandée au lancement : garder aussi les relations non
  *              dessinées entre concepts conservés, sauf celles exclues.
  * Priorité   : un concept exclu reste exporté s'il est affiché dans une vue
@@ -36,112 +38,139 @@ const Files   = Java.type("java.nio.file.Files");
 const Paths   = Java.type("java.nio.file.Paths");
 const REPLACE = Java.type("java.nio.file.StandardCopyOption").REPLACE_EXISTING;
 
-// 1. Choix des fichiers et de l'option
+// 1. Choix des fichiers et de l'option.
+// Chaque fenêtre de fichier est annoncée : sur macOS, leur titre n'est pas
+// affiché et les deux fenêtres se ressemblent.
+console.clear();
+console.log("== Export partiel ==");
+
+window.alert("Étape 1/3 : choisis le fichier du modèle SOURCE (.archimate existant).");
 const srcPath = window.promptOpenFile({ title: "Modèle source", filterExtensions: ["*.archimate"] });
-if (!srcPath) exit();
-const dstPath = window.promptSaveFile({ title: "Copie à créer", filterExtensions: ["*.archimate"], fileName: "export.archimate" });
-if (!dstPath) exit();
+if (!srcPath) { console.log("Annulé : aucun modèle source choisi."); exit(); }
+const src = Paths.get(String(srcPath)).toAbsolutePath();
+if (!Files.isRegularFile(src)) {
+  window.alert("Modèle source introuvable :\n" + src + "\n\nChoisis un fichier .archimate existant.");
+  exit();
+}
+console.log("Source  : " + src);
+
+window.alert("Étape 2/3 : choisis le dossier et le nom du fichier d'EXPORT à créer.");
+let dstPath = window.promptSaveFile({ title: "Fichier d'export", filterExtensions: ["*.archimate"], fileName: "export.archimate" });
+if (!dstPath) { console.log("Annulé : aucun fichier d'export choisi."); exit(); }
+dstPath = String(dstPath);
+if (!/\.archimate$/i.test(dstPath)) dstPath += ".archimate";
+const dst = Paths.get(dstPath).toAbsolutePath();
+if (src.equals(dst)) { window.alert("Le fichier d'export doit être différent du modèle source."); exit(); }
+console.log("Export  : " + dst);
+
 const KEEP_HIDDEN_RELATIONS = window.confirm(
-  "Garder aussi les relations non dessinées entre éléments exportés ?\n\n" +
+  "Étape 3/3 : garder aussi les relations non dessinées entre éléments exportés ?\n\n" +
   "OK : oui, toutes les relations entre éléments conservés, sauf celles exclues.\n" +
   "Annuler : non, uniquement les relations visibles ou marquées."
 );
+console.log("Relations non dessinées : " + (KEEP_HIDDEN_RELATIONS ? "gardées" : "écartées"));
 
-const src = Paths.get(srcPath).toAbsolutePath();
-const dst = Paths.get(dstPath).toAbsolutePath();
-if (src.equals(dst)) { window.alert("La copie doit être un fichier différent du source."); exit(); }
+// 2. Copie de travail dans un fichier temporaire. Le fichier d'export n'est
+// écrit qu'à la fin, une fois le périmètre validé.
+const tmp = Files.createTempFile("export-partiel-", ".archimate");
+try {
+  Files.copy(src, tmp, REPLACE);
+  const m = $.model.load(tmp.toString());
+  console.log("Copie de travail chargée.");
 
-// 2. Copie complète du fichier
-Files.copy(src, dst, REPLACE);
-const m = $.model.load(dst.toString());
-
-// 3. Décision d'export : marquage propre, sinon héritage du dossier parent.
-// Retourne true (exporter), false (exclure) ou null (aucune décision).
-function marquage(o) {
-  const val = o.prop(PROP_EXPORT);
-  if (val == null) return null;
-  const v = String(val).trim().toLowerCase();
-  if (v === VALEUR_EXPORT) return true;
-  if (v === VALEUR_EXCLUSION) return false;
-  return null;
-}
-
-function dossierParent(o) {
-  const p = $(o).parent();
-  if (p.size() === 0) return null;
-  const d = p.first();
-  return d && d.type === "folder" ? d : null;
-}
-
-const cacheDossiers = {};
-function decision(o) {
-  const propre = marquage(o);
-  if (propre !== null) return propre;
-  const d = dossierParent(o);
-  if (!d) return null;
-  if (!(d.id in cacheDossiers)) cacheDossiers[d.id] = decision(d);
-  return cacheDossiers[d.id];
-}
-
-// 4. Périmètre
-const keepViews = new Set(), keep = new Set(), forces = [];
-
-function garder(c, raison) {
-  if (keep.has(c.id)) return;
-  keep.add(c.id);
-  if (raison && decision(c) === false)
-    forces.push(c.type + " « " + c.name + " » : exclu, mais gardé car " + raison);
-  if (c.type.endsWith("-relationship")) {
-    garder(c.source, "extrémité d'une relation exportée");
-    garder(c.target, "extrémité d'une relation exportée");
+  // 3. Décision d'export : marquage propre, sinon héritage du dossier parent.
+  // Retourne true (exporter), false (exclure) ou null (aucune décision).
+  function marquage(o) {
+    const val = o.prop(PROP_EXPORT);
+    if (val == null) return null;
+    const v = String(val).trim().toLowerCase();
+    if (v === VALEUR_EXPORT) return true;
+    if (v === VALEUR_EXCLUSION) return false;
+    return null;
   }
-}
 
-$(m).find("view").filter(v => decision(v) === true).each(v => {
-  keepViews.add(v.id);
-  $(v).find().each(o => {
-    if (o.concept) garder(o.concept, "affiché dans la vue « " + v.name + " »");
-  });
-});
-$(m).find("element").filter(e => decision(e) === true).each(e => garder(e, null));
-$(m).find("relationship").filter(r => decision(r) === true).each(r => garder(r, null));
+  function dossierParent(o) {
+    const p = $(o).parent();
+    if (p.size() === 0) return null;
+    const d = p.first();
+    return d && d.type === "folder" ? d : null;
+  }
 
-if (keepViews.size === 0 && keep.size === 0) {
-  window.alert("Aucun objet marqué « " + PROP_EXPORT + " » à « " + VALEUR_EXPORT +
-               " », directement ou par son dossier. Rien n'a été exporté.");
-  Files.deleteIfExists(dst);
-  exit();
-}
+  const cacheDossiers = {};
+  function decision(o) {
+    const propre = marquage(o);
+    if (propre !== null) return propre;
+    const d = dossierParent(o);
+    if (!d) return null;
+    if (!(d.id in cacheDossiers)) cacheDossiers[d.id] = decision(d);
+    return cacheDossiers[d.id];
+  }
 
-// 4 bis. Option : relations non dessinées entre concepts conservés.
-// Boucle jusqu'à stabilité, car une relation peut relier une autre relation.
-let hidden = 0;
-if (KEEP_HIDDEN_RELATIONS) {
-  let added;
-  do {
-    added = 0;
-    $(m).find("relationship").each(r => {
-      if (!keep.has(r.id) && decision(r) !== false &&
-          keep.has(r.source.id) && keep.has(r.target.id)) {
-        keep.add(r.id);
-        added++;
-      }
+  // 4. Périmètre
+  const keepViews = new Set(), keep = new Set(), forces = [];
+
+  function garder(c, raison) {
+    if (keep.has(c.id)) return;
+    keep.add(c.id);
+    if (raison && decision(c) === false)
+      forces.push(c.type + " « " + c.name + " » : exclu, mais gardé car " + raison);
+    if (c.type.endsWith("-relationship")) {
+      garder(c.source, "extrémité d'une relation exportée");
+      garder(c.target, "extrémité d'une relation exportée");
+    }
+  }
+
+  $(m).find("view").filter(v => decision(v) === true).each(v => {
+    keepViews.add(v.id);
+    $(v).find().each(o => {
+      if (o.concept) garder(o.concept, "affiché dans la vue « " + v.name + " »");
     });
-    hidden += added;
-  } while (added > 0);
-}
+  });
+  $(m).find("element").filter(e => decision(e) === true).each(e => garder(e, null));
+  $(m).find("relationship").filter(r => decision(r) === true).each(r => garder(r, null));
 
-// 5. Élagage de la copie
-$(m).find("view").filter(v => !keepViews.has(v.id)).delete();
-$(m).find("relationship").filter(r => !keep.has(r.id)).delete();
-$(m).find("element").filter(e => !keep.has(e.id)).delete();
+  console.log("Marqués : " + keepViews.size + " vue(s), " + keep.size + " concept(s).");
+  if (keepViews.size === 0 && keep.size === 0) {
+    window.alert("Aucun objet marqué « " + PROP_EXPORT + " » à « " + VALEUR_EXPORT +
+                 " », directement ou par son dossier. Aucun fichier créé.");
+    exit();
+  }
 
-// 6. Enregistrement de la copie
-m.save();
-console.log("Export prêt : " + dst + " (" + keepViews.size + " vues, " + keep.size +
-            " concepts dont " + hidden + " relations non dessinées)");
-if (forces.length > 0) {
+  // 4 bis. Option : relations non dessinées entre concepts conservés.
+  // Boucle jusqu'à stabilité, car une relation peut relier une autre relation.
+  let hidden = 0;
+  if (KEEP_HIDDEN_RELATIONS) {
+    let added;
+    do {
+      added = 0;
+      $(m).find("relationship").each(r => {
+        if (!keep.has(r.id) && decision(r) !== false &&
+            keep.has(r.source.id) && keep.has(r.target.id)) {
+          keep.add(r.id);
+          added++;
+        }
+      });
+      hidden += added;
+    } while (added > 0);
+  }
+
+  // 5. Élagage de la copie
+  $(m).find("view").filter(v => !keepViews.has(v.id)).delete();
+  $(m).find("relationship").filter(r => !keep.has(r.id)).delete();
+  $(m).find("element").filter(e => !keep.has(e.id)).delete();
+
+  // 6. Enregistrement : la copie de travail devient le fichier d'export.
+  m.save();
+  Files.move(tmp, dst, REPLACE);
   console.log("");
-  console.log(forces.length + " objet(s) exclu(s) mais gardé(s) :");
-  forces.forEach(f => console.log("  " + f));
+  console.log("Export prêt : " + dst + " (" + keepViews.size + " vues, " + keep.size +
+              " concepts dont " + hidden + " relations non dessinées)");
+  if (forces.length > 0) {
+    console.log("");
+    console.log(forces.length + " objet(s) exclu(s) mais gardé(s) :");
+    forces.forEach(f => console.log("  " + f));
+  }
+  window.alert("Export créé :\n" + dst);
+} finally {
+  Files.deleteIfExists(tmp); // sans effet si le fichier a été déplacé
 }
