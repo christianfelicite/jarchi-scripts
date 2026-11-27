@@ -8,9 +8,13 @@
  *              le clic sur « Appliquer » puis la validation du récapitulatif.
  *              Les modifications portent sur les concepts : elles valent pour
  *              toutes les vues où ils figurent. Compte rendu dans la console.
- * Saisie     : double-clic sur une cellule.
- *              - Texte : Entrée ou clic ailleurs valide, Échap annule.
- *              - Documentation : fenêtre multiligne.
+ * Saisie     : dans la cellule même, par double-clic, ou F2 sur la ligne
+ *              sélectionnée (colonne cliquée en dernier).
+ *              - Entrée ou clic ailleurs valide, Échap annule.
+ *              - Tab / Maj+Tab : valide et passe à la cellule modifiable
+ *                suivante / précédente, puis à la ligne suivante.
+ *              - Documentation : zone multiligne déployée sur la cellule ;
+ *                Maj+Entrée insère un retour à la ligne.
  *              - Spécialisation, type d'accès, sens d'association : liste.
  *              Cellule modifiée : fond surligné. Texte grisé : non modifiable.
  *              Remettre la valeur d'origine annule la modification.
@@ -38,6 +42,8 @@ var CCombo = Java.type("org.eclipse.swt.custom.CCombo");
 
 var RECAPITULATIF_MAX = 40;
 var LONGUEUR_APERCU = 60;
+var LARGEUR_MULTILIGNE = 400;
+var HAUTEUR_MULTILIGNE = 120;
 
 // Attributs propres à certains types de relation. choix : [valeur, libellé].
 var ATTRIBUTS = {
@@ -256,38 +262,6 @@ function appliquer(liste) {
 // ---------------------------------------------------------------------------
 // Fenêtres
 
-/** Fenêtre de saisie multiligne. Retourne le texte validé, ou null. */
-function saisirMultiligne(parent, titreFenetre, valeur) {
-    var resultat = null;
-    var d = new Shell(parent, SWT.DIALOG_TRIM | SWT.RESIZE | SWT.APPLICATION_MODAL);
-    d.setText(titreFenetre);
-    d.setLayout(new GridLayout(2, false));
-
-    var zone = new Text(d, SWT.MULTI | SWT.BORDER | SWT.WRAP | SWT.V_SCROLL);
-    var gd = new GridData(SWT.FILL, SWT.FILL, true, true, 2, 1);
-    gd.widthHint = 600;
-    gd.heightHint = 300;
-    zone.setLayoutData(gd);
-    zone.setText(valeur);
-
-    var ok = new Button(d, SWT.PUSH);
-    ok.setText("OK");
-    ok.setLayoutData(new GridData(SWT.END, SWT.CENTER, true, false));
-    var annuler = new Button(d, SWT.PUSH);
-    annuler.setText("Annuler");
-
-    ok.addListener(SWT.Selection, function () {
-        resultat = texte(zone.getText());
-        d.close();
-    });
-    annuler.addListener(SWT.Selection, function () { d.close(); });
-
-    d.pack();
-    d.open();
-    attendreFermeture(d);
-    return resultat;
-}
-
 /**
  * Fenêtre d'édition. contenus : [{ titre, cols, lignes }].
  * Retourne true si l'utilisateur a cliqué sur « Appliquer ».
@@ -316,7 +290,7 @@ function editer(titreFenetre, contenus) {
     function majEtat(message) {
         var n = changements(contenus).length;
         boutonAppliquer.setEnabled(n > 0);
-        etat.setText((message ? message + " — " : "") + n + " modification(s) en attente. Double-clic sur une cellule pour la modifier.");
+        etat.setText((message ? message + " — " : "") + n + " modification(s) en attente. Double-clic ou F2 : modifier la cellule ; Tab : cellule suivante.");
     }
 
     function decorer(item, l, cols) {
@@ -334,12 +308,18 @@ function editer(titreFenetre, contenus) {
         brancherEdition(o);
     });
 
-    /** Édition en place : double-clic → contrôle de saisie sur la cellule. */
+    /**
+     * Édition dans la cellule : double-clic ou F2. Tab / Maj+Tab : cellule
+     * modifiable suivante / précédente, en passant à la ligne au besoin.
+     */
     function brancherEdition(o) {
         var tableau = o.tableau;
         var editeur = new TableEditor(tableau);
         editeur.horizontalAlignment = SWT.LEFT;
+        editeur.verticalAlignment = SWT.TOP;
         editeur.grabHorizontal = true;
+        editeur.grabVertical = true;
+        var colonneCourante = -1;
 
         function valider(item, i, l, v) {
             var col = o.cols[i];
@@ -351,36 +331,60 @@ function editer(titreFenetre, contenus) {
             majEtat();
         }
 
+        /** Cellule modifiable après (sens 1) ou avant (sens -1) celle-ci, ou null. */
+        function voisine(ligne, i, sens) {
+            var nbCols = o.cols.length, nbLignes = tableau.getItemCount();
+            for (var pas = 1; pas <= nbCols * nbLignes; pas++) {
+                var rang = ligne * nbCols + i + sens * pas;
+                if (rang < 0 || rang >= nbCols * nbLignes) return null;
+                var r = Math.floor(rang / nbCols), c = rang % nbCols;
+                if (saisieDe(o.cols[c], o.affichees()[r])) return { ligne: r, colonne: c };
+            }
+            return null;
+        }
+
+        function aller(cible) {
+            if (!cible) return;
+            ecran.asyncExec(function () {
+                if (tableau.isDisposed()) return;
+                var item = tableau.getItem(cible.ligne);
+                tableau.setSelection(cible.ligne);
+                tableau.showColumn(tableau.getColumn(cible.colonne));
+                ouvrir(item, cible.colonne);
+            });
+        }
+
         function ouvrir(item, i) {
-            var l = o.affichees()[tableau.indexOf(item)];
+            var ligne = tableau.indexOf(item);
+            var l = o.affichees()[ligne];
             var col = o.cols[i];
             var saisie = l ? saisieDe(col, l) : null;
+            colonneCourante = i;
             if (!saisie) {
                 majEtat("« " + col.titre + " » n'est pas modifiable ici");
-                return;
-            }
-            if (saisie === "multiligne") {
-                var v = saisirMultiligne(fenetre, col.titre + " — " + (l.nom || l.type), col.valeur(l));
-                if (v !== null) valider(item, i, l, v);
                 return;
             }
 
             var ancien = editeur.getEditor();
             if (ancien && !ancien.isDisposed()) ancien.dispose();
 
+            var liste = saisie !== "texte" && saisie !== "multiligne";
+            var multiligne = saisie === "multiligne";
             var controle, fini = false;
-            if (saisie === "texte") {
-                controle = new Text(tableau, SWT.NONE);
-                controle.setText(col.valeur(l));
-                controle.selectAll();
-            } else {
+            if (liste) {
                 controle = new CCombo(tableau, SWT.READ_ONLY);
                 saisie.forEach(function (x) { controle.add(x === "" ? " " : x); });
                 controle.select(Math.max(0, saisie.indexOf(col.valeur(l))));
+            } else {
+                controle = new Text(tableau, multiligne ? SWT.MULTI | SWT.WRAP | SWT.V_SCROLL | SWT.BORDER : SWT.NONE);
+                controle.setText(col.valeur(l));
+                controle.selectAll();
             }
+            editeur.minimumWidth = multiligne ? LARGEUR_MULTILIGNE : 0;
+            editeur.minimumHeight = multiligne ? HAUTEUR_MULTILIGNE : 0;
 
             function lireSaisie() {
-                if (saisie === "texte") return texte(controle.getText());
+                if (!liste) return texte(controle.getText());
                 var index = controle.getSelectionIndex();
                 return index < 0 ? col.valeur(l) : saisie[index];
             }
@@ -394,19 +398,25 @@ function editer(titreFenetre, contenus) {
 
             controle.addListener(SWT.Traverse, function (e) {
                 if (e.detail === SWT.TRAVERSE_RETURN) {
+                    // Maj+Entrée : retour à la ligne dans la documentation.
+                    if (multiligne && (e.stateMask & SWT.SHIFT)) return;
                     e.doit = false;
                     terminer(true);
                 } else if (e.detail === SWT.TRAVERSE_ESCAPE) {
                     e.doit = false;
                     terminer(false);
+                } else if (e.detail === SWT.TRAVERSE_TAB_NEXT || e.detail === SWT.TRAVERSE_TAB_PREVIOUS) {
+                    e.doit = false;
+                    terminer(true);
+                    aller(voisine(ligne, i, e.detail === SWT.TRAVERSE_TAB_NEXT ? 1 : -1));
                 }
             });
             controle.addListener(SWT.FocusOut, function () { terminer(true); });
-            if (saisie !== "texte") controle.addListener(SWT.Selection, function () { terminer(true); });
+            if (liste) controle.addListener(SWT.Selection, function () { terminer(true); });
 
             editeur.setEditor(controle, item, i);
             controle.setFocus();
-            if (saisie !== "texte") controle.setListVisible(true);
+            if (liste) controle.setListVisible(true);
         }
 
         tableau.addListener(SWT.MouseDoubleClick, function (e) {
@@ -417,6 +427,22 @@ function editer(titreFenetre, contenus) {
                     ouvrir(item, i);
                     return;
                 }
+            }
+        });
+        tableau.addListener(SWT.MouseDown, function (e) {
+            var item = tableau.getItem(new Point(e.x, e.y));
+            if (!item) return;
+            for (var i = 0; i < o.cols.length; i++) {
+                if (item.getBounds(i).contains(e.x, e.y)) colonneCourante = i;
+            }
+        });
+        tableau.addListener(SWT.KeyDown, function (e) {
+            if (e.keyCode !== SWT.F2 || tableau.getSelectionIndex() < 0) return;
+            var ligne = tableau.getSelectionIndex();
+            if (colonneCourante >= 0 && saisieDe(o.cols[colonneCourante], o.affichees()[ligne])) {
+                ouvrir(tableau.getItem(ligne), colonneCourante);
+            } else {
+                aller(voisine(ligne, -1, 1));
             }
         });
     }
